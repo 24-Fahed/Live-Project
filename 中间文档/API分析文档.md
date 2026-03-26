@@ -1,0 +1,458 @@
+# API 分析文档
+
+## 0. 多直播间数据隔离（v0.3.0 新增）
+
+### 概述
+
+从 v0.3.0 版本开始，网关支持多直播间数据隔离。每个直播间的票数、辩题等数据独立存储，互不影响。
+
+### 数据隔离结构
+
+```
+votesByStream: Map<streamId, { leftVotes, rightVotes }>
+```
+
+### 支持多直播间的 API
+
+| API 路径 | 方法 | streamId 参数位置 | 说明 |
+|----------|------|-------------------|------|
+| `/api/votes` | GET | `?stream_id=` 或 `?streamId=` | 获取指定直播间的票数 |
+| `/api/user-vote` | POST | `body.streamId` | 向指定直播间投票 |
+| `/api/v1/votes` | GET | `?stream_id=` 或 `?streamId=` | 获取指定直播间的票数（v1） |
+| `/api/v1/user-vote` | POST | `body.request.streamId` | 向指定直播间投票（v1） |
+| `/api/admin/votes` | GET | `?stream_id=` 或 `?streamId=` | 管理员获取指定直播间票数 |
+| `/api/admin/votes` | PUT | `body.streamId` | 管理员修改指定直播间票数 |
+| `/api/admin/votes/reset` | POST | `body.streamId` | 管理员重置指定直播间票数 |
+
+### WebSocket 广播消息
+
+所有投票相关的 WebSocket 广播消息现在都包含 `streamId` 字段：
+
+```json
+{
+  "type": "votes-updated",
+  "data": {
+    "streamId": "stream-001",
+    "leftVotes": 100,
+    "rightVotes": 200,
+    "leftPercentage": 33,
+    "rightPercentage": 67,
+    "totalVotes": 300
+  }
+}
+```
+
+前端应根据 `streamId` 过滤消息，只处理当前直播间的更新。
+
+### 默认值
+
+如果未提供 `streamId`，默认使用 `"default"` 作为直播间 ID，保持向后兼容。
+
+---
+
+## 1. 总体架构
+
+| 项目 | 说明 |
+|------|------|
+| 当前模式 | API 契约先行，Gateway 充当 Mock Server |
+| 网关地址 | `http://localhost:8080`（`0.0.0.0:8080`） |
+| 后端地址 | `http://192.140.160.119:8000`（同机不同端口） |
+| 小程序前端 | 通过 `api-service.js` 统一调用，目标服务器由 `config/server-mode.js` 控制 |
+| 管理后台 | 静态文件由网关托管（`/admin`），API 调用直连后端 8000（绕过网关） |
+
+## 2. `/api` 与 `/api/v1` 的区别
+
+| 前缀 | 处理方 | 端口 | 说明 |
+|------|--------|------|------|
+| `/api/*` | Gateway（Mock） | 8080 | 网关本地实现，使用 JSON 文件存储（`db.js`） |
+| `/api/v1/*` | Backend（真实后端） | 8000 | 后端服务实现，网关未覆盖这些路由 |
+
+### 判断依据
+
+| 证据 | 来源 | 说明 |
+|------|------|------|
+| 小程序 `API_BASE_URL = http://localhost:8080` | `frontend/config/server-mode.js:111` | 小程序连接网关 |
+| 小程序大量调用 `/api/v1/*` 路径 | `frontend/utils/api-service.js` 全文 | 网关无对应路由，会命中 404 |
+| 管理后台 `API_BASE = http://192.140.160.119:8000/api/admin` | `gateway/admin/admin.js:26` | 管理后台直连后端 |
+| 管理后台 `getAPIBase()` 返回 `http://192.140.160.119:8000` | `gateway/admin/admin-api.js:11` | 管理后台直连后端 |
+| 网关仅定义 3 个 `/api/v1/` 路由 | `gateway/gateway.js` | 其余 `/api/v1/` 均返回 404 |
+| 评委 API 标注 `TODO: 调用后端API` | `gateway/admin/judges-management.js:186,439` | 功能预留，等待后端实现 |
+
+### 网关中已实现的 `/api/v1/` 路由（例外）
+
+| API 路径 | 功能 | 方法 | 说明 |
+|----------|------|------|------|
+| `/api/v1/admin/ai-content/list` | AI 内容列表（分页） | GET | 网关同时提供 `/api` 和 `/api/v1` 两个版本 |
+| `/api/v1/admin/ai-content/:id/comments` | AI 内容评论列表 | GET | 同上 |
+| `/api/v1/admin/ai-content/:id/comments/:commentId` | 删除 AI 内容评论 | DELETE | 同上 |
+
+---
+
+## 3. 后端开发指南：只需要开发 `/api/v1/*`
+
+### 核心结论
+
+**后端只需要实现 `/api/v1/*` 路径，不需要重复实现 `/api/*` 路由。**
+
+`/api/*` 是网关的 Mock 实现，用于前端开发阶段。前端的核心业务调用已经全部指向 `/api/v1/*`，`/api/*` 仅作为兼容回退存在。
+
+### 判断依据（12 条证据）
+
+| # | 证据 | 代码位置 |
+|---|------|----------|
+| 1 | `userVote()` 注释明确写"后端API期望数据包装在 request 字段中"，v1 路径就是为后端设计的 | `api-service.js:338-339` |
+| 2 | 前端 `userVote()` 发送 `{ request: { leftVotes, ... } }`，网关 handler 直接读 `req.body.leftVotes`（为 undefined），**网关的非 v1 路由处理不了前端的 v1 请求格式** | `api-service.js:340-345` vs `gateway.js:2100` |
+| 3 | `getVote()`（非 v1）只在投票后作为 fallback 调用，不是主流程 | `api-service.js:354-363` |
+| 4 | `userVoteDistribution()` 逐一尝试 v1 和非 v1 共 4 种格式，哪种成功用哪种，说明两者功能等价 | `api-service.js:420-473` |
+| 5 | `getDebateTopic()` 把网关字段名 `leftPosition` 和后端字段名 `leftSide` 统一映射，兼容两个后端 | `api-service.js:656-678` |
+| 6 | `getStreamsList()` 兼容 5 种响应格式，典型的"兼容两个后端"写法 | `api-service.js:882-900` |
+| 7 | `getDashboard()` 有 streamId 时用 v1，无 streamId 时用非 v1，v1 是更完整的版本 | `api-service.js:822-824` |
+| 8 | 网关 404 中间件用 `req.path.startsWith('/api')` 匹配，`/api/v1/votes` 会被拦截并返回 404，网关从未打算处理 v1 | `gateway.js:1488-1497` |
+| 9 | 网关自己实现的 3 个 v1 路由与对应非 v1 路由功能相同，仅响应字段命名略不同 | `gateway.js:858,1149,1250` |
+| 10 | 小程序所有核心业务（投票、AI 内容、辩题、流管理、投票统计）只有 v1 路径，没有非 v1 替代 | `api-service.js:235,542,632,723,879,912` |
+| 11 | 非v1独有的 6 个接口（评论、点赞、直播控制等）全部是基础功能，没有 v1 版本是因为开发顺序，不是设计意图 | `api-service.js:566,597,615,851,812,945` |
+| 12 | 管理后台 `admin-api.js` 全部使用 `/api/v1/admin/*`，管理后台面向生产环境，v1 才是生产 API | `admin-api.js` 全文 |
+
+### 前端调用情况一览
+
+| 前端方法 | 主调路径 | 回退路径 | 说明 |
+|----------|----------|----------|------|
+| `getVotes()` | `/api/v1/votes` | 无 | 只有 v1 |
+| `getVote()` | 无 | `/api/votes` | 只有非 v1，仅作投票后 fallback |
+| `userVote()` | `/api/v1/user-vote` | → `getVote()` → `getVotes()` | 主调 v1 |
+| `userVoteDistribution()` | 先 v1 后非 v1 | 4 种组合全试 | 诊断代码 |
+| `getAiContent()` | `/api/v1/ai-content` | 无 | 只有 v1 |
+| `getDebateTopic()` | `/api/v1/debate-topic` | 无 | 只有 v1 |
+| `getUserVotes()` | `/api/v1/user-votes` | 无 | 只有 v1 |
+| `getStreamsList()` | `/api/v1/admin/streams` | 无 | 只有 v1 |
+| `getVotesStatistics()` | `/api/v1/admin/votes/statistics` | 无 | 只有 v1 |
+| `getDashboard(streamId)` | `/api/v1/admin/dashboard?stream_id=` | `/api/admin/dashboard`（无 streamId 时） | 有 streamId 用 v1 |
+| `addComment()` | 无 | `/api/comment` | 只有非 v1 |
+| `like()` | 无 | `/api/like` | 只有非 v1 |
+| `deleteComment()` | 无 | `/api/comment/:commentId` | 只有非 v1 |
+| `controlLive()` | 无 | `/api/live/control` | 只有非 v1 |
+| `getLiveStatus()` | 无 | `/api/admin/live/status` | 只有非 v1 |
+| `getRtmpToHlsUrls()` | 无 | `/api/admin/rtmp/urls` | 只有非 v1 |
+
+### 后端需要开发的 API 清单
+
+#### A. 前端已有 v1 调用（必须实现）
+
+| API 路径 | 功能 | 方法 | 前端调用位置 |
+|----------|------|------|-------------|
+| `/api/v1/votes` | 获取投票数据 | GET | `api-service.js:235` |
+| `/api/v1/user-vote` | 用户投票 | POST | `api-service.js:350` |
+| `/api/v1/ai-content` | 获取 AI 内容 | GET | `api-service.js:542` |
+| `/api/v1/debate-topic` | 获取辩题 | GET | `api-service.js:632` |
+| `/api/v1/user-votes` | 查询用户投票记录 | GET | `api-service.js:723` |
+| `/api/v1/admin/dashboard` | 管理后台概览 | GET | `api-service.js:823` |
+| `/api/v1/admin/streams` | 直播流列表 | GET | `api-service.js:879` |
+| `/api/v1/admin/votes/statistics` | 投票统计 | GET | `api-service.js:912` |
+
+#### B. 管理后台已有 v1 调用（必须实现）
+
+| API 路径 | 功能 | 方法 | 管理后台调用位置 |
+|----------|------|------|-----------------|
+| `/api/v1/admin/dashboard` | 管理后台概览 | GET | `admin-api.js` |
+| `/api/v1/admin/live/start` | 开始直播 | POST | `admin-api.js` |
+| `/api/v1/admin/live/stop` | 停止直播 | POST | `admin-api.js` |
+| `/api/v1/admin/live/update-votes` | 更新投票 | POST | `admin-api.js` |
+| `/api/v1/admin/live/reset-votes` | 重置投票 | POST | `admin-api.js` |
+| `/api/v1/admin/live/viewers` | 获取观看人数 | GET | `admin-api.js` |
+| `/api/v1/admin/live/broadcast-viewers` | 广播观看人数 | POST | `admin-api.js` |
+| `/api/v1/admin/ai/start` | 启动 AI | POST | `admin-api.js` |
+| `/api/v1/admin/ai/stop` | 停止 AI | POST | `admin-api.js` |
+| `/api/v1/admin/ai/toggle` | 暂停/恢复 AI | POST | `admin-api.js` |
+| `/api/v1/admin/ai-content/list` | AI 内容列表（分页） | GET | `admin-api.js` |
+| `/api/v1/admin/ai-content/:id/comments` | AI 内容评论列表 | GET | `admin-api.js` |
+| `/api/v1/admin/ai-content/:id/comments/:commentId` | 删除 AI 评论 | DELETE | `admin-api.js` |
+| `/api/v1/admin/streams` | 直播流列表 | GET | `admin-api.js` |
+| `/api/v1/admin/streams/{streamId}/debate` | 流关联辩题 | GET/PUT/DELETE | `admin-api.js` |
+| `/api/v1/admin/debates` | 辩题 CRUD | POST/GET/PUT | `admin-api.js` |
+| `/api/v1/admin/judges` | 评委管理 | GET/POST | `judges-management.js`（已注释，TODO） |
+
+#### C. 当前只有非 v1，建议补充 v1 版本
+
+| 当前非 v1 路径 | 建议的 v1 路径 | 功能 | 方法 |
+|---------------|---------------|------|------|
+| `/api/comment` | `/api/v1/comment` | 添加评论 | POST |
+| `/api/like` | `/api/v1/like` | 点赞 | POST |
+| `/api/comment/:commentId` | `/api/v1/comment/:commentId` | 删除评论 | DELETE |
+| `/api/live/control` | `/api/v1/live/control` | 直播控制 | POST |
+| `/api/admin/live/status` | `/api/v1/admin/live/status` | 直播状态 | GET |
+| `/api/admin/rtmp/urls` | `/api/v1/admin/rtmp/urls` | RTMP 转 HLS | GET |
+
+> 这 6 个接口前端目前调用的是非 v1 路径。后端可以选择：
+> - 方案一：实现对应的 v1 版本，然后前端将调用路径改为 v1
+> - 方案二：网关将 `/api/*` 请求代理转发到后端的 `/api/v1/*`（加一层路径映射）
+> - 方案三：保持现状，网关继续处理这 6 个接口
+
+---
+
+## 4. 网关全权负责的 API
+
+### 3.1 小程序用户端 API
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/votes` | 获取投票数据 | GET | Query: `stream_id` | `{ success, data: { leftVotes, rightVotes, totalVotes, leftPercentage, rightPercentage } }` |
+| `/api/user-vote` | 用户投票 | POST | 格式1: `{ side, votes }`<br>格式2: `{ leftVotes, rightVotes, userId }` | `{ success, data: { leftVotes, rightVotes, totalVotes, leftPercentage, rightPercentage }, message }` |
+| `/api/debate-topic` | 获取辩题 | GET | Query: `stream_id`（可选） | `{ success, data: { id, title, description } }` |
+| `/api/ai-content` | 获取 AI 内容 | GET | Query: `stream_id`（可选） | `{ success, data: [{ id, debate_id, text, side, timestamp, comments: [{ id, user, text, time, avatar, likes }], likes }] }` |
+| `/api/comment` | 添加评论 | POST | `{ contentId, user, avatar, text }` | `{ success, data: { id, user, text, time, avatar, likes } }` |
+| `/api/comment/:commentId` | 删除评论 | DELETE | Params: `commentId`<br>Body: `{ contentId }` | `{ success, data: { message, deletedComment: { id, user, text, time, avatar, likes } } }` |
+| `/api/like` | 点赞 | POST | `{ contentId, commentId }`（commentId 可选） | `{ success, data: { likes } }` |
+| `/api/wechat-login` | 微信登录 | POST | `{ code, userInfo, encryptedData, iv }` | `{ success, data: { openid, session_key, unionid, userInfo: { nickName, avatarUrl }, loginTime, isMock } }` |
+| `/api/live/control` | 直播控制 | POST | `{ action: "start"/"stop", streamId }`（streamId 可选） | 开始: `{ success, message, data: { status: "started", streamUrl, streamId, streamName } }`<br>停止: `{ success, message, data: { status: "stopped" } }` |
+
+### 3.2 管理后台 API（网关实现版）
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/admin/dashboard` | 管理后台概览 | GET | Query: `stream_id`（可选） | `{ success, data: { totalUsers, activeUsers, isLive, liveStreamUrl, streamId, activeStreamUrl, activeStreamId, activeStreamName, totalVotes, leftVotes, rightVotes, leftPercentage, rightPercentage, totalComments, totalLikes, aiStatus, debateTopic: { title, leftSide, rightSide, description }, liveStartTime, liveDuration }, timestamp }` |
+| `/api/admin/live/status` | 直播状态 | GET | - | `{ isLive, streamUrl, scheduledStartTime, scheduledEndTime, streamId, isScheduled, liveId, startTime, schedule: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled }, activeStreamUrl, activeStreamId, activeStreamName }` |
+| `/api/admin/live/start` | 开始直播 | POST | `{ streamId, autoStartAI, notifyUsers }` | `{ success, data: { liveId, streamUrl, status: "started", startTime, notifiedUsers }, message, timestamp }` |
+| `/api/admin/live/stop` | 停止直播 | POST | `{ streamId, saveStatistics, notifyUsers }` | 正常停止: `{ success, data: { liveId, status: "stopped", stopTime, duration, summary: { totalViewers, peakViewers, totalVotes, totalComments, totalLikes }, notifiedUsers }, message, timestamp }`<br>未在直播: `{ success, data: { status: "stopped", message }, message, timestamp }` |
+| `/api/admin/live/control` | 直播控制 | POST | `{ action: "start"/"stop", streamUrl }`（streamUrl 可选） | 开始: `{ success: true, status: "started", streamUrl }`<br>停止: `{ success: true, status: "stopped" }` |
+| `/api/admin/live/update-votes` | 更新投票 | POST | `{ action: "set"/"add"/"reset", leftVotes, rightVotes, reason, notifyUsers }` | `{ success, data: { beforeUpdate: { leftVotes, rightVotes }, afterUpdate: { leftVotes, rightVotes, leftPercentage, rightPercentage }, updateTime }, message, timestamp }` |
+| `/api/admin/live/reset-votes` | 重置投票 | POST | `{ resetTo: { leftVotes, rightVotes }, saveBackup, notifyUsers }` | `{ success, data: { backup: { backupId, leftVotes, rightVotes, timestamp }, currentVotes: { leftVotes, rightVotes } }, message, timestamp }` |
+| `/api/admin/live/schedule` | 直播排期列表 | GET | - | `{ success, data: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled } }` |
+| `/api/admin/live/schedule` | 创建排期 | POST | `{ scheduledStartTime, scheduledEndTime, streamId }` | `{ success, message: "直播计划已设置", data: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled } }` |
+| `/api/admin/live/schedule/cancel` | 取消排期 | POST | - | `{ success, message: "直播计划已取消" }` |
+| `/api/admin/live/setup-and-start` | 配置并开始直播 | POST | `{ streamId, scheduledStartTime, scheduledEndTime, startNow }` | 立即开始: `{ success, message: "直播已开始", data: { isLive: true, streamUrl, streamId } }`<br>定时开始: `{ success, message: "直播计划已设置", data: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled } }` |
+| `/api/admin/ai/start` | 启动 AI | POST | `{ settings: { mode, interval, sensitivity, minConfidence }, notifyUsers }` | `{ success, data: { aiSessionId, status: "running", startTime, settings: { mode, interval, sensitivity, minConfidence } }, message, timestamp }` |
+| `/api/admin/ai/stop` | 停止 AI | POST | `{ saveHistory, notifyUsers }` | `{ success, data: { aiSessionId, status: "stopped", stopTime, duration, summary: { totalContents, totalWords, averageConfidence } }, message, timestamp }` |
+| `/api/admin/ai/toggle` | 暂停/恢复 AI | POST | `{ action: "pause"/"resume", notifyUsers }` | `{ success, data: { aiSessionId, status: "paused"/"running", actionTime }, message, timestamp }` |
+| `/api/admin/ai/content/:contentId` | 删除 AI 内容 | DELETE | Params: `contentId`<br>Body: `{ reason, notifyUsers }` | `{ success, data: { contentId, deleteTime, reason }, message, timestamp }` |
+| `/api/admin/ai-content` | AI 内容列表 | GET | - | `{ success, data: [{ id, debate_id, text, side, timestamp, comments, likes }] }` |
+| `/api/admin/ai-content` | 创建 AI 内容 | POST | `{ text, side, debate_id }` | `{ success, data: { id, debate_id, text, side, timestamp, comments: [], likes } }` |
+| `/api/admin/ai-content/:id` | AI 内容详情 | GET | Params: `id` | `{ success, data: { id, debate_id, text, side, timestamp, comments: [{ id, user, text, time, avatar, likes }], likes } }` |
+| `/api/admin/ai-content/:id` | 更新 AI 内容 | PUT | Params: `id`<br>Body: `{ text, side, debate_id }` | `{ success, data: { id, debate_id, text, side, timestamp, comments, likes } }` |
+| `/api/admin/ai-content/:id` | 删除 AI 内容 | DELETE | Params: `id` | `{ success, message: "删除成功", data: { id, debate_id, text, side, timestamp, comments, likes } }` |
+| `/api/admin/ai-content/list` | AI 内容列表（分页） | GET | Query: `page, pageSize, startTime, endTime` | `{ success, data: { total, page, pageSize, items: [{ id, debate_id, text, side, timestamp, comments, likes }] }, timestamp }` |
+| `/api/admin/ai-content/:id/comments` | AI 内容评论列表 | GET | Params: `id`<br>Query: `page, pageSize` | `{ success, data: { contentId, contentText, total, page, pageSize, comments: [{ id, user, text, time, avatar, likes }] }, timestamp }` |
+| `/api/admin/ai-content/:id/comments/:commentId` | 删除 AI 评论 | DELETE | Params: `id, commentId`<br>Body: `{ reason, notifyUsers }` | `{ success, data: { contentId, commentId, deleted: true }, message, timestamp }` |
+| `/api/v1/admin/ai-content/list` | AI 内容列表（v1分页） | GET | Query: `page, pageSize, startTime, endTime` | `{ success, data: { total, page, items: [{ id, content, type: "summary", timestamp, position, confidence, statistics: { views, likes, comments } }] } }` |
+| `/api/v1/admin/ai-content/:id/comments` | AI 内容评论（v1） | GET | Params: `id`<br>Query: `page, pageSize` | `{ success, data: { contentId, contentText, total, page, pageSize, comments: [{ commentId, userId, nickname, avatar, content, likes, timestamp }] } }` |
+| `/api/v1/admin/ai-content/:id/comments/:commentId` | 删除 AI 评论（v1） | DELETE | Params: `id, commentId`<br>Body: `{ reason, notifyUsers }` | `{ success, data: { commentId, contentId, deleteTime }, message }` |
+| `/api/admin/votes` | 投票数据 | GET | - | `{ success, data: { leftVotes, rightVotes, totalVotes, leftPercentage, rightPercentage } }` |
+| `/api/admin/votes` | 更新投票 | PUT | `{ leftVotes, rightVotes }` | `{ success, data: { leftVotes, rightVotes, totalVotes } }` |
+| `/api/admin/votes/reset` | 重置投票 | POST | - | `{ success, message: "票数已重置" }` |
+| `/api/admin/votes/statistics` | 投票统计 | GET | Query: `timeRange`（默认 "1h"） | `{ success, data: { summary: { totalVotes, leftVotes, rightVotes, leftPercentage, rightPercentage, growthRate }, timeline: [{ timestamp, leftVotes, rightVotes, totalVotes, activeUsers }], topVoters: [] }, timestamp }` |
+| `/api/admin/streams` | 直播流列表 | GET | - | `{ success, data: { streams: [{ id, name, url, type, description, enabled, createdAt, updatedAt, playUrls: { hls, flv, rtmp }, liveStatus: { isLive, liveId, startTime, stopTime, streamUrl } }], total }, timestamp }` |
+| `/api/admin/streams` | 创建直播流 | POST | `{ name, url, type: "hls"/"rtmp"/"flv", description, enabled }` | `{ success, data: { id, name, url, type, description, enabled, createdAt, updatedAt }, message, timestamp }` |
+| `/api/admin/streams/:id` | 更新直播流 | PUT | Params: `id`<br>Body: `{ name, url, type, description, enabled }` | `{ success, data: { id, name, url, type, description, enabled, createdAt, updatedAt }, message, timestamp }` |
+| `/api/admin/streams/:id` | 删除直播流 | DELETE | Params: `id` | `{ success, data: { id, name }, message, timestamp }` |
+| `/api/admin/miniprogram/users` | 小程序用户列表 | GET | Query: `page, pageSize, status, orderBy` | `{ success, data: { total, page, pageSize, users: [{ userId, nickname, avatar, status, lastActiveTime, statistics: { totalVotes, totalComments, totalLikes, currentPosition }, joinTime }] }, timestamp }` |
+| `/api/admin/debate` | 获取辩题 | GET | - | `{ success, data: { title, description, leftPosition, rightPosition } }` |
+| `/api/admin/debate` | 更新辩题 | PUT | `{ title, description, leftPosition, rightPosition }` | `{ title, description, leftPosition, rightPosition }`（返回更新后的完整对象） |
+| `/api/admin/statistics/summary` | 统计概要 | GET | - | `{ success, data: { totalVotes, totalUsers, totalStreams, totalLiveDays } }` |
+| `/api/admin/statistics/daily` | 每日统计 | GET | - | `{ success, data: [{ date, votes, users, newUsers, liveMinutes }] }`（数据来自 `db.statistics`，初始化为空数组，具体字段取决于运行时写入的数据） |
+| `/api/admin/users` | 用户列表 | GET | - | 用户对象数组，结构取决于运行时写入的数据（初始化为空数组） |
+| `/api/admin/users/:id` | 用户详情 | GET | Params: `id` | 同上，单个用户对象 |
+
+---
+
+## 5. 需要后端处理的 API（网关未实现）
+
+> **说明：** 以下 API 的响应格式从前端代码推断得出（前端读取了哪些字段），实际后端实现可能存在差异。
+
+### 4.1 小程序前端调用（`api-service.js`，目标为网关 8080，但网关无路由）
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/v1/votes` | 获取投票数据 | GET | Query: `stream_id` | `{ leftVotes, rightVotes, total }`（推断自 `api-service.js` 使用方式） |
+| `/api/v1/user-vote` | 用户投票 | POST | `{ request: { leftVotes, rightVotes, streamId, stream_id, userId } }` | 更新后的投票数据（推断自 `api-service.js`，投票成功后回读票数） |
+| `/api/v1/ai-content` | 获取 AI 内容 | GET | Query: `stream_id`（可选） | `{ success, data: [{ id, content, timestamp, confidence }] }`（推断自 `api-service.js` 注释） |
+| `/api/v1/debate-topic` | 获取辩题 | GET | Query: `stream_id`（可选） | `{ success, data: { id, title, description, leftPosition, rightPosition } }`（推断自 `api-service.js` 字段兼容处理逻辑） |
+| `/api/v1/user-votes` | 查询用户投票状态 | GET | Query: `stream_id, user_id` | `{ success, data: { streamId, userId, side, votes, timestamp } }`（推断自 `api-service.js` 返回值使用） |
+| `/api/v1/admin/dashboard` | 管理后台概览 | GET | Query: `stream_id` | `{ success, data: { isLive, liveStreamUrl, totalUsers, activeUsers, aiStatus, streamId } }`（推断自 `api-service.js` 字段读取） |
+| `/api/v1/admin/streams` | 直播流列表 | GET | - | `{ success, data: { streams: [{ id, name, enabled, rtmpUrl, hlsUrl }], total } }`（推断自 `api-service.js` 多格式兼容处理） |
+| `/api/v1/admin/votes/statistics` | 投票统计 | GET | Query: `stream_id`（可选） | `{ success, data: { ... } }`（推断自 `api-service.js`，前端仅透传，未直接使用具体字段） |
+
+### 4.2 管理后台调用（`admin-api.js`，直连后端 8000）
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/v1/admin/dashboard` | 管理后台概览 | GET | Query: `stream_id` | `{ success, data: { isLive, liveStreamUrl, totalUsers, activeUsers, aiStatus, streamId } }`（推断自 `admin-api.js:39-43` 日志输出字段） |
+| `/api/v1/admin/live/start` | 开始直播 | POST | `{ streamId, autoStartAI, notifyUsers }`（streamId 必填） | `{ success, data: { liveId, status, startTime, notifiedUsers } }`（推断自网关同路径实现的响应结构） |
+| `/api/v1/admin/live/stop` | 停止直播 | POST | `{ streamId, saveStatistics, notifyUsers }`（streamId 必填） | `{ success, data: { liveId, status: "stopped", stopTime, duration, summary: { totalViewers, peakViewers, totalVotes, totalComments, totalLikes } } }`（推断自网关同路径实现） |
+| `/api/v1/admin/live/update-votes` | 更新投票 | POST | `{ action: "set"/"add"/"reset", leftVotes, rightVotes, reason, notifyUsers, streamId }` | `{ success, data: { beforeUpdate: { leftVotes, rightVotes }, afterUpdate: { leftVotes, rightVotes, leftPercentage, rightPercentage }, updateTime } }`（推断自网关同路径实现） |
+| `/api/v1/admin/live/reset-votes` | 重置投票 | POST | `{ resetTo: { leftVotes, rightVotes }, saveBackup, notifyUsers, streamId }` | `{ success, data: { backup: { backupId, leftVotes, rightVotes, timestamp }, currentVotes: { leftVotes, rightVotes } } }`（推断自网关同路径实现） |
+| `/api/v1/admin/live/viewers` | 获取所有流观看人数 | GET | - | `{ data: { streams: { [streamId]: count }, totalConnections }, timestamp }`（推断自 `admin-api.js:638-640` 字段读取） |
+| `/api/v1/admin/live/viewers` | 获取指定流观看人数 | GET | Query: `stream_id` | `{ data: { viewers: count, streamId, timestamp } }`（推断自 `admin-api.js:622` 字段读取） |
+| `/api/v1/admin/live/broadcast-viewers` | 广播观看人数 | POST | `{ streamId }` | `{ data: { streamId, viewers, message } }`（推断自 `admin-api.js:664` 字段读取） |
+| `/api/v1/admin/ai/start` | 启动 AI 识别 | POST | `{ settings: { mode, sensitivity, minConfidence }, streamId, notifyUsers }` | `{ success, data: { aiSessionId, status: "running", startTime, settings } }`（推断自网关同路径实现） |
+| `/api/v1/admin/ai/stop` | 停止 AI 识别 | POST | `{ streamId, saveHistory, notifyUsers }` | `{ success, data: { aiSessionId, status: "stopped", stopTime, duration, summary: { totalContents, totalWords, averageConfidence } } }`（推断自网关同路径实现） |
+| `/api/v1/admin/ai/toggle` | 暂停/恢复 AI | POST | `{ action: "pause"/"resume", notifyUsers }` | `{ success, data: { aiSessionId, status, actionTime } }`（推断自网关同路径实现） |
+| `/api/v1/admin/ai-content/list` | AI 内容列表（分页） | GET | Query: `page, pageSize, startTime, endTime, stream_id` | `{ success, data: { total, page, items: [{ id, content, type, timestamp, position, confidence, statistics: { views, likes, comments } }] } }`（推断自网关 `/api/v1/admin/ai-content/list` 实现） |
+| `/api/v1/admin/ai-content/:id/comments` | AI 内容评论列表 | GET | Params: `id`<br>Query: `page, pageSize` | `{ success, data: { contentId, contentText, total, page, pageSize, comments: [{ commentId, userId, nickname, avatar, content, likes, timestamp }] } }`（推断自网关同路径实现） |
+| `/api/v1/admin/ai-content/:id/comments/:commentId` | 删除 AI 评论 | DELETE | Params: `id, commentId`<br>Body: `{ reason, notifyUsers }` | `{ success, data: { commentId, contentId, deleteTime }, message }`（推断自网关同路径实现） |
+| `/api/v1/admin/streams` | 直播流列表 | GET | - | `{ success, data: { streams: [{ id, name, enabled }], total } }`（推断自 `admin-api.js:78-80` 字段读取） |
+| `/api/v1/admin/streams/{streamId}/debate` | 获取流关联辩题 | GET | Params: `streamId` | `{ success, data: { debateId, debateTitle, ... } }`（推断自 `admin-api.js:723-726`，前端仅透传返回值） |
+| `/api/v1/admin/streams/{streamId}/debate` | 关联辩题到流 | PUT | Params: `streamId`<br>Body: `{ debate_id }` | `{ success, data }`（推断自 `admin-api.js:771-775`，前端仅发送不读取返回值） |
+| `/api/v1/admin/streams/{streamId}/debate` | 删除流关联辩题 | DELETE | Params: `streamId` | `{ success, data }`（推断自 `admin-api.js:783-786`，前端仅发送不读取返回值） |
+| `/api/v1/admin/debates` | 创建辩题 | POST | `{ title, description, leftPosition, rightPosition, isActive }` | `{ success, data: { id, title, description, leftPosition, rightPosition, isActive } }`（推断自 `admin-api.js:747-751`） |
+| `/api/v1/admin/debates/{debateId}` | 获取辩题详情 | GET | Params: `debateId` | `{ success, data: { id, title, description, leftPosition, rightPosition, isActive } }`（推断自 `admin-api.js:759-763`） |
+| `/api/v1/admin/debates/{debateId}` | 更新辩题 | PUT | Params: `debateId`<br>Body: `{ title, description, leftPosition, rightPosition, isActive }` | `{ success, data: { id, title, description, leftPosition, rightPosition, isActive } }`（推断自 `admin-api.js:735-739`） |
+
+### 4.3 管理后台调用（`admin.js`，直连后端 8000，`/api/admin` 路径）
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/admin/streams` | 直播流列表 | GET | - | `[{ id, name, url, type, description, enabled, createdAt, updatedAt }]`（推断自 `admin.js:1112-1119` 读取 `stream.id/name/type/enabled`） |
+| `/api/admin/streams` | 创建直播流 | POST | `{ name, url, type: "hls"/"rtmp"/"flv", description, enabled }` | `{ id, name, url, type, description, enabled, createdAt, updatedAt }`（推断自 `admin.js:1201-1202` 读取 `created.id`） |
+| `/api/admin/streams/{id}/toggle` | 切换流启用状态 | POST | Params: `id`<br>Body: 无 | `{ success: true }`（推断自 `admin.js:914` 检查 `response.ok`） |
+| `/api/admin/streams/{id}` | 删除直播流 | DELETE | Params: `id`<br>Body: 无 | `{ success: true }`（推断自 `admin.js:931` 检查 `response.ok`） |
+| `/api/admin/debate` | 获取辩题 | GET | - | `{ title, description, leftPosition, rightPosition }`（推断自 `admin.js:947-950` 读取 `debate.title/description/leftPosition/rightPosition`） |
+| `/api/admin/debate` | 更新辩题 | PUT | `{ title, description, leftPosition, rightPosition }` | `{ title, description, leftPosition, rightPosition }`（推断自 `admin.js:971` 检查 `response.ok`） |
+| `/api/admin/live/setup-and-start` | 立即开始直播 | POST | `{ streamId, startNow: true }` | `{ success, data: { isLive: true, streamUrl, streamId } }`（推断自 `admin.js:1277-1279` 读取 `result.success`） |
+| `/api/admin/live/setup-and-start` | 定时开始直播 | POST | `{ streamId, scheduledStartTime, scheduledEndTime, startNow: false }` | `{ success, data: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled } }`（推断自 `admin.js:1354-1357` 读取 `result.success`） |
+| `/api/admin/live/schedule` | 直播排期列表 | GET | - | `{ success, data: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled } }`（推断自 `admin.js:1792-1798` 读取 `scheduleResult.data.isScheduled/streamId/scheduledStartTime`） |
+| `/api/admin/live/schedule` | 创建排期 | POST | `{ scheduledStartTime, scheduledEndTime, streamId }`（`scheduledEndTime` 可选） | `{ success, data: { scheduledStartTime, scheduledEndTime, streamId, debateId, isScheduled } }`（推断自 `admin.js:1907` 读取 `result.success`） |
+| `/api/admin/live/schedule/cancel` | 取消排期 | POST | Body: 无 | `{ success, error? }`（推断自 `admin.js:1931-1937` 读取 `result.success` 或 `result.error`） |
+| `/api/admin/ai-content` | AI 内容列表 | GET | Query: `stream_id`（可选） | `{ success, data: [{ id, content, position, confidence, timestamp, statistics: { views, likes, comments } }] }`（推断自 `admin.js:2119-2134` 渲染字段） |
+| `/api/admin/ai-content` | AI 内容创建 | POST | `{ text, side: "left"/"right", debate_id }` | `{ success }`（推断自 `admin.js:2317` 检查 `result.success`） |
+| `/api/admin/ai-content/{contentId}` | AI 内容更新 | PUT | Params: `contentId`<br>Body: `{ text, side: "left"/"right", debate_id }` | `{ success }`（推断自 `admin.js:2304-2317` 复用同一提交逻辑，有 contentId 时走 PUT） |
+| `/api/admin/ai-content/{contentId}` | AI 内容删除 | DELETE | Params: `contentId` | 由 `admin-api.js` 的 `deleteAIContent()` 处理，格式见 4.2 节 |
+
+### 4.4 网关也未实现的 `/api/*` 路由（管理后台直连后端）
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/admin/rtmp/urls` | RTMP 转 HLS 地址 | GET | Query: `room_name` | `{ success, data: { room_name, push_url, play_flv, play_hls } }`（推断自 `api-service.js:949-955` 字段读取） |
+| `/api/admin/debate-flow` | 获取辩论流程配置 | GET | Query: `stream_id` | `{ segments: [{ name, duration, side }] }`（推断自 `admin-api.js:865-869` 默认值结构） |
+| `/api/admin/debate-flow` | 保存辩论流程配置 | POST | `{ stream_id, segments: [{ name, duration, side }] }` | 保存结果（推断自 `admin-api.js:889-909`，前端仅 console.log） |
+| `/api/admin/debate-flow/control` | 辩论流程控制命令 | POST | `{ stream_id, action }` | 控制结果（推断自 `admin-api.js:918-938`，前端仅 console.log） |
+
+### 4.5 预留但未启用的 API（代码中已注释，标注 TODO）
+
+| API 路径 | 功能 | 方法 | 请求格式 | 响应格式 |
+|----------|------|------|----------|----------|
+| `/api/v1/admin/judges` | 获取评委列表 | GET | Query: `stream_id` | `{ data: { judges: [{ id, name, role, avatar, leftVotes, rightVotes }] } }`（推断自 `judges-management.js:8-35` 数据结构定义） |
+| `/api/v1/admin/judges` | 保存评委数据 | POST | `{ stream_id, judges: [{ id, name, role, avatar, leftVotes, rightVotes }] }` | 保存结果（代码已注释，无法推断具体格式） |
+
+---
+
+## 6. WebSocket
+
+| 项目 | 说明 |
+|------|------|
+| 路径 | `/ws` |
+| 协议 | WebSocket |
+| 处理方 | 网关全权负责（`gateway.js` 中实现） |
+| 管理后台 WebSocket | 直连后端 `http://192.140.160.119:8000`（`admin.js:83`） |
+
+### 消息格式
+
+| 消息类型 | 方向 | 数据结构 |
+|----------|------|----------|
+| `connected` | 服务端→客户端 | `{ type: "connected", message: "已连接到实时数据服务" }` |
+| `liveStatus` | 双向 | `{ type: "liveStatus", data: { isLive, streamUrl, streamId } }` |
+| `aiStatus` | 双向 | `{ type: "aiStatus", data: { status, streamId } }` |
+| `votesUpdate` | 双向 | `{ type: "votesUpdate", data: { leftVotes, rightVotes, totalVotes } }` |
+| `aiContent` | 服务端→客户端 | `{ type: "aiContent", data: { id, content, timestamp } }` |
+
+---
+
+## 7. 网关转发架构（2026-03-16 新增）
+
+### 设计目标
+
+后端优先实现 `/api/v1/*`，网关将所有未匹配的 API 请求转发到后端。
+
+### 请求处理流程
+
+```
+请求进入
+  ↓
+[express.json()] gateway.js:173 — 解析 JSON 请求体到 req.body（网关基础设施，不可移除）
+  ↓
+[日志中间件] gateway.js:1475 — 记录所有 /api 请求
+  ↓
+[显式路由 handlers] gateway.js:191-3252 — 网关本地实现的 /api/* 路由（保留作为 fallback）
+  ↓ (未匹配)
+[API转发中间件] gateway.js:1489 — 转发到后端
+  ├── /api/v1/*  → 直接转发到 REAL_SERVER_URL（http://localhost:8000）
+  ├── /api/*    → 重写路径为 /api/v1/*，再转发到 REAL_SERVER_URL
+  ├── 请求体处理：req.body 已存在时序列化写入代理请求，否则走 req.pipe()
+  ↓ (转发失败)
+[404 中间件] gateway.js:1527 — 兜底返回 JSON 404
+```
+
+### 修改的文件
+
+| 文件 | 改动 | 标记 |
+|------|------|------|
+| `config/server-mode.node.js:4-5` | `REAL_SERVER_URL` 改为 `http://localhost:8000`，`REAL_SERVER_PORT` 改为 `8000` | 无 |
+| `gateway.js:9` | 导入 `REAL_SERVER_URL` | `[API转发]` |
+| `gateway.js:1489-1525` | 新增转发中间件 | `[API转发]` |
+
+### 转发行为
+
+| 前端请求 | 转发目标 | 说明 |
+|----------|----------|------|
+| `/api/v1/votes` | `http://localhost:8000/api/v1/votes` | 路径不变 |
+| `/api/votes` | `http://localhost:8000/api/v1/votes` | `/api` → `/api/v1` |
+| `/api/comment` | `http://localhost:8000/api/v1/comment` | `/api` → `/api/v1` |
+| `/api/admin/dashboard` | `http://localhost:8000/api/v1/admin/dashboard` | `/api` → `/api/v1` |
+| `/api/admin/streams` | 先匹配网关本地 handler；若 handler 不存在则转发 | 网关有显式路由的继续本地处理 |
+
+### 注意事项
+
+- 网关本地已实现的路由（37 个 `app.get/post/put/delete`）仍然有效，优先于转发中间件
+- 转发失败时（后端未启动等），会 fallback 到 404 中间件
+- 管理后台（`admin.js`、`admin-api.js`）仍然直连后端 8000，不经过此转发
+
+---
+
+## 8. 格式说明
+
+### 无法确定的格式
+
+| API 路径 | 格式说明 | 调查结论 |
+|----------|----------|----------|
+| `GET /api/admin/statistics/daily` | 响应: `{ success, data: [] }` | `dailyStats` 在整个代码库中**只有初始化（空数组）和读取**，没有任何写入逻辑，也没有任何前端代码调用此 API。`data` 永远是空数组，无法推断元素字段。设计意图是每个元素代表一天的直播统计，但从未实现。 |
+| `GET /api/admin/users` | 响应: `[{ id, nickName, avatarUrl, createdAt, updatedAt, totalVotes, joinedDebates, status }]` | 用户数据来自微信登录写入（`gateway.js:2037`，写入 `id/nickName/avatarUrl`）和投票时更新（`gateway.js:2171`，累加 `totalVotes/joinedDebates`）。`data/users.json` 中有真实数据佐证。前端无直接调用者，仅 `judges-management.js:294` 调用了 `/api/v1/admin/users`（v1 路由，网关未实现，当前 404）。 |
+| `GET /api/admin/users/:id` | 响应: 同上，单个用户对象 | 同上。handler 直接返回 `db.users.getById()` 的结果，结构与列表中每个元素相同。 |
+| `POST /api/v1/admin/judges`（预留） | 请求: `{ stream_id, judges: [{ id, name, role, avatar, votes }] }`<br>响应: 未知 | 代码已注释（`judges-management.js:186,438-446`）。`judgesData` 默认结构从文件顶部定义推断（`judges-management.js:8-30`），每个评委有 `id, name, role, avatar, votes` 五个字段。请求格式从注释代码推断，响应格式无参考。 |
+| `POST /api/admin/debate-flow` | 请求: `{ stream_id, segments: [{ name, duration, side }] }`<br>响应: 未知 | 网关未实现此路由。前端 `admin-api.js:893-905` 调用后端（8000 端口），发送 `{ stream_id, segments }`，收到响应后仅 `console.log`，未读取具体字段。`segments` 元素结构从 `admin-api.js:870-878` 默认值推断：`{ name: string, duration: number, side: "left"/"right"/"both" }`。 |
+| `POST /api/admin/debate-flow/control` | 请求: `{ stream_id, action }`<br>响应: 未知 | 同上。`admin-api.js:918-938` 调用后端，发送 `{ stream_id, action }`（action 为 `"start"/"pause"/"resume"/"reset"/"next"/"prev"`，见 `admin-api.js:915` 注释），收到响应后仅 `console.log`。 |
+
+### 响应格式统一规范
+
+网关所有成功响应遵循以下模式：
+
+| 模式 | 格式 | 适用场景 |
+|------|------|----------|
+| 标准成功 | `{ success: true, data: { ... }, message: "...", timestamp: number }` | 管理后台 API |
+| 简单成功 | `{ success: true, data: { ... } }` | 小程序用户端 API |
+| 仅消息 | `{ success: true, message: "..." }` | 简单操作（如重置投票） |
+| 错误 | `{ success: false, message: "..." }` | 所有错误情况 |
+
+---
+
+## 9. 鉴权需求
+
+### 9.1 需要用户鉴权的 API
+
+以下接口需要携带用户 Token（`Authorization: Bearer <token>`），用于识别用户身份。
+
+| 路径 | 方法 |
+|------|------|
+| `/api/v1/user-vote` | POST |
+| `/api/v1/user-votes` | GET |
+| `/api/comment` | POST |
+| `/api/comment/:commentId` | DELETE |
+| `/api/like` | POST |
+| `/api/v1/votes` | GET |
+| `/api/v1/ai-content` | GET |
+| `/api/v1/ai-content/list` | GET |
+| `/api/v1/ai-content/:id/comments` | GET |
+| `/api/v1/debate-topic` | GET |
+| `/ws` | - |
+
+### 9.2 暂不鉴权的 API
+
+- `/admin/*` 及 `/api/admin/*` 路径下的所有接口（admin 后台相关，后续通过 IP 白名单或 VPN 方案控制访问）
+- `/api/wechat-login`（登录接口本身）

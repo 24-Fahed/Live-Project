@@ -1,0 +1,21 @@
+services:
+  gateway:
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    container_name: live-gateway
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./hls-data:/app/static/hls
+    env_file:
+      - ../gateway/.env
+    restart: unless-stopped
+
+  cloudflare:
+    image: cloudflare/cloudflared:latest
+    container_name: live-tunnel
+    command: tunnel --url http://gateway:8443
+    depends_on:
+      - gateway
+    restart: unless-stopped

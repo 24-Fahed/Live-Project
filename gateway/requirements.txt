@@ -1,0 +1,9 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.24.0
+python-jose[cryptography]>=3.3.0
+cryptography>=42.0.0
+pydantic-settings>=2.0.0
+blinker>=1.7.0
+loguru>=0.7.0
+aiofiles>=23.0.0
+httpx>=0.24.0
