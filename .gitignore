@@ -258,3 +258,9 @@ data.backup.disabled/
 
 # Docker
 .dockerignore
+
+# Live Project runtime/generated assets
+docker/hls-data/
+gateway/static/hls/
+frontend/node_modules/
+frontend/unpackage/
