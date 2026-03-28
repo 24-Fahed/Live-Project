@@ -1,17 +1,35 @@
 {
   "name": "live-debate-server",
   "version": "1.0.0",
-  "description": "直播辩论小程序后端服务器",
+  "description": "????????????",
   "main": "server.js",
   "uni-app": {
     "scripts": {
       "mp-weixin-device": {
-        "title": "微信小程序(真机)",
+        "title": "?????(?????)",
         "env": {
           "UNI_PLATFORM": "mp-weixin"
         },
         "define": {
           "MP-WEIXIN-DEVICE": true
+        }
+      },
+      "mp-weixin-ip-debug": {
+        "title": "?????(IP??)",
+        "env": {
+          "UNI_PLATFORM": "mp-weixin"
+        },
+        "define": {
+          "MP-WEIXIN-IP-DEBUG": true
+        }
+      },
+      "mp-weixin-ip-release": {
+        "title": "?????(IP??)",
+        "env": {
+          "UNI_PLATFORM": "mp-weixin"
+        },
+        "define": {
+          "MP-WEIXIN-IP-RELEASE": true
         }
       }
     }
@@ -58,3 +76,4 @@
   "author": "Your Name",
   "license": "MIT"
 }
+
