@@ -111,6 +111,7 @@ docker/
 
 | 字段 | 作用 | 是否必须配置 | 说明 |
 | --- | --- | --- | --- |
+| `SRS_IMAGE` | SRS 容器镜像地址 | 是 | 当前建议使用国内可访问镜像，例如 `docker.m.daocloud.io/ossrs/srs:5` |
 | `SRS_HOST` | Gateway 访问 SRS 的主机名 | 是 | 当前 Docker 内固定使用 `srs` |
 | `SRS_RTMP_PORT` | SRS RTMP 推流端口 | 是 | 当前默认 `1935` |
 | `SRS_HTTP_PORT` | SRS HTTP 播放端口 | 是 | 当前默认 `8088` |
@@ -131,14 +132,22 @@ docker/
 - 这些字段不是让前端使用的，而是给网关的 `media` 子系统生成推流地址使用。
 - 即使当前阶段暂时用不到，也建议保留，属于“环境模板字段”，不是无效字段。
 
-### 3.5 安全字段
+### 3.5 国内环境构建字段
+
+| 字段 | 作用 | 是否必须配置 | 说明 |
+| --- | --- | --- | --- |
+| `PYTHON_BASE_IMAGE` | Gateway 构建时使用的 Python 基础镜像 | 国内服务器建议配置 | 当前建议使用 `docker.m.daocloud.io/library/python:3.10-slim` |
+| `PIP_INDEX_URL` | `pip install` 使用的软件包源 | 国内服务器建议配置 | 当前建议使用清华源 `https://pypi.tuna.tsinghua.edu.cn/simple` |
+| `PIP_TRUSTED_HOST` | `pip install` 的可信主机 | 国内服务器建议配置 | 当前建议使用 `pypi.tuna.tsinghua.edu.cn` |
+
+### 3.6 安全字段
 
 | 字段 | 作用 | 是否必须配置 | 说明 |
 | --- | --- | --- | --- |
 | `SRS_CALLBACK_TOKEN` | SRS 回调到 Gateway 时的校验令牌 | 当前建议保留 | 这是安全预留字段，未来接 SRS 回调时会真正用到 |
 | `MEDIA_ADMIN_TOKEN` | 媒体管理相关的额外安全令牌 | 当前建议保留 | 也是安全预留字段，当前版本可以先不启用复杂逻辑 |
 
-### 3.6 哪些字段当前属于“预留，不一定要改”
+### 3.7 哪些字段当前属于“预留，不一定要改”
 
 下面这些字段当前建议保留在 `.env.*` 中，但在某些阶段可以先不改，或者先保留默认值：
 
@@ -167,6 +176,10 @@ docker/
 ```env
 APP_ENV=local
 APP_RUNTIME_MODE=local
+PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+SRS_IMAGE=docker.m.daocloud.io/ossrs/srs:5
 USE_DOMAIN=false
 USE_PUBLIC_IP=false
 LOCAL_BASE_URL=http://127.0.0.1:8080
@@ -203,6 +216,10 @@ MEDIA_ADMIN_TOKEN=replace-me
 ```env
 APP_ENV=staging
 APP_RUNTIME_MODE=staging
+PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+SRS_IMAGE=docker.m.daocloud.io/ossrs/srs:5
 USE_DOMAIN=false
 USE_PUBLIC_IP=true
 LOCAL_BASE_URL=http://127.0.0.1:8080
@@ -242,6 +259,10 @@ MEDIA_ADMIN_TOKEN=replace-me
 ```env
 APP_ENV=production
 APP_RUNTIME_MODE=production
+PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+SRS_IMAGE=docker.m.daocloud.io/ossrs/srs:5
 USE_DOMAIN=true
 USE_PUBLIC_IP=true
 LOCAL_BASE_URL=http://127.0.0.1:8080
@@ -369,6 +390,7 @@ http://127.0.0.1:8080/live/stream-001.m3u8
 
 - 安装 Docker
 - 安装 Docker Compose
+- 确认服务器可以访问你配置的国内镜像源与清华 PyPI 源
 - 开放端口：
   - `8080`
   - `1935`
@@ -382,6 +404,13 @@ http://127.0.0.1:8080/live/stream-001.m3u8
 - `PUBLIC_BASE_URL`
 - `STAGING_PUSH_BASE`
 - `PRODUCTION_PUSH_BASE`
+
+如果服务器在国内网络环境下访问海外站点不稳定，建议同时确认这些字段保持为国内友好配置：
+
+- `PYTHON_BASE_IMAGE`
+- `PIP_INDEX_URL`
+- `PIP_TRUSTED_HOST`
+- `SRS_IMAGE`
 
 ### 7.3 第三步：上传并部署
 
@@ -559,4 +588,3 @@ rtmp://公网IP:1935/live
 - 上线调稳定性
 
 这三个阶段分开，你的推进会轻松很多。
-
