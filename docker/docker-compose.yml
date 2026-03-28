@@ -8,8 +8,6 @@ services:
       - '8080:8080'
     volumes:
       - ./srs/html:/app/runtime/srs-html:ro
-    env_file:
-      - ../gateway/.env
     depends_on:
       - srs
     restart: unless-stopped
