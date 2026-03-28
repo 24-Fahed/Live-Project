@@ -1,25 +1,17 @@
-// 后台管理系统主逻辑
-// 服务器配置
+// ?????????
+// ?????
 const SERVER_CONFIG = {
-	// 本地开发时使用
-	LOCAL_URL: 'http://localhost:8081',
-	// 中间层服务器地址（已废弃，不再使用）
+	LOCAL_URL: (typeof window !== 'undefined' && window.location) ? window.location.origin : 'http://127.0.0.1:8080',
 	MIDDLEWARE_URL: 'http://192.168.31.249:8081',
-	// 后端服务器地址（真实服务器，直接访问）
-	BACKEND_URL: 'http://localhost:8080',
-	// 当前使用的地址（修改这里切换服务器）
+	BACKEND_URL: (typeof window !== 'undefined' && window.location) ? window.location.origin : 'http://127.0.0.1:8080',
 	get BASE_URL() {
-		// 🔧 配置：直接访问真实后端服务器（获取真实数据）
-		return this.BACKEND_URL; // 使用真实后端服务器
+		return this.BACKEND_URL;
 	},
 	get WEB_SOCKET_URL() {
-		// 🔧 配置：WebSocket 也直接连接到真实后端服务器
-		// 如果真实后端服务器不支持 WebSocket，可以设置为 null 来禁用 WebSocket
-		return this.BACKEND_URL; // 使用真实后端服务器
+		return this.BACKEND_URL;
 	}
 };
 
-// 将配置挂载到 window 对象，供其他脚本使用
 window.SERVER_CONFIG = SERVER_CONFIG;
 
 // API_BASE只保留基础URL，具体路径在各个API函数中定义
