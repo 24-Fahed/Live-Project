@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
 
   srs:
-    image: ossrs/srs:5
+    image: ${SRS_IMAGE:-docker.m.daocloud.io/ossrs/srs:5}
     container_name: live-srs
     command: ['./objs/srs', '-c', 'conf/srs.conf']
     ports:
