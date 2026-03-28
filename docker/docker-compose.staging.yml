@@ -1,0 +1,5 @@
+services:
+  gateway:
+    env_file:
+      - ../gateway/.env
+      - ./.env.staging

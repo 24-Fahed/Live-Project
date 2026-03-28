@@ -5,17 +5,23 @@ services:
       dockerfile: Dockerfile
     container_name: live-gateway
     ports:
-      - "8080:8080"
+      - '8080:8080'
     volumes:
-      - ./hls-data:/app/static/hls
+      - ./srs/html:/app/runtime/srs-html:ro
     env_file:
       - ../gateway/.env
+    depends_on:
+      - srs
     restart: unless-stopped
 
-  cloudflare:
-    image: cloudflare/cloudflared:latest
-    container_name: live-tunnel
-    command: tunnel --url http://gateway:8443
-    depends_on:
-      - gateway
+  srs:
+    image: ossrs/srs:5
+    container_name: live-srs
+    command: ['./objs/srs', '-c', 'conf/srs.conf']
+    ports:
+      - '1935:1935'
+      - '8088:8088'
+    volumes:
+      - ./srs/srs.conf:/usr/local/srs/conf/srs.conf:ro
+      - ./srs/html:/usr/local/srs/objs/nginx/html
     restart: unless-stopped

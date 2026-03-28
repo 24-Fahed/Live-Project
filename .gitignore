@@ -261,6 +261,8 @@ data.backup.disabled/
 
 # Live Project runtime/generated assets
 docker/hls-data/
+docker/srs/html/
 gateway/static/hls/
+gateway/runtime/
 frontend/node_modules/
 frontend/unpackage/
