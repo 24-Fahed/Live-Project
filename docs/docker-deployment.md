@@ -1,4 +1,4 @@
-﻿# Live Project Docker 部署设计说明
+# Live Project Docker 部署设计说明
 
 > 文档定位：描述当前仓库在 Docker 条件下的真实部署方式
 > 表达方式：Markdown + Mermaid（部署图、时序图）
@@ -7,12 +7,16 @@
 
 当前仓库中的 Docker 方案主要解决以下问题：
 
-- 将 `gateway/` 打包为可运行容器；
-- 挂载 HLS 静态文件目录；
-- 使用 Cloudflare Tunnel 暴露 HLS HTTPS 地址，便于手机或微信环境访问；
-- 通过 `docker/start.sh` 自动抓取 Tunnel 域名，并回填到前端直播配置文件中。
+- 将 `gateway/` 构建为统一入口容器
+- 将 `srs` 作为独立媒体服务容器运行
+- 在不同环境下通过 `.env.local`、`.env.staging`、`.env.prod` 控制协议、端口、域名与 HTTPS 能力
+- 为 `local -> staging -> prod` 的递进部署提供统一编排基础
 
-需要强调的是：当前 Docker Compose 并未直接编排 `frontend/` 工程，因此它是“网关与流媒体访问链路”的部署方案，不是全系统一体化部署方案。
+需要强调的是：
+
+- `frontend/` 微信小程序不参与 Docker 部署
+- Admin 静态资源由 `gateway` 托管
+- OBS 推流继续走公网 IP 的 RTMP 端口，不走 Cloudflare 代理
 
 ## 2. 部署单元
 
@@ -22,30 +26,37 @@
 
 | 服务名 | 镜像/构建 | 作用 |
 | --- | --- | --- |
-| `gateway` | 由 `../gateway/Dockerfile` 构建 | 提供 FastAPI 网关、管理后台、WebSocket，并在容器内启动 HLS 服务 |
-| `cloudflare` | `cloudflare/cloudflared:latest` | 将 HLS 地址通过临时 Tunnel 域名暴露为 HTTPS 地址 |
+| `gateway` | 由 `../gateway/Dockerfile` 构建 | 提供 FastAPI 网关、管理后台、API、WebSocket、`/live` 播放代理 |
+| `srs` | `${SRS_IMAGE}` | 提供 RTMP 推流接入与 HLS 文件输出 |
 
 ### 2.2 容器部署图
 
 ```mermaid
 flowchart LR
-    User[Client]
+    User[Browser / Mini Program]
     Admin[Admin]
+    OBS[OBS]
 
     subgraph DockerHost[Docker Host]
         subgraph Compose[Docker Compose]
-            Gateway[gateway container\n8080 FastAPI Gateway\n8443 HLS HTTPS]
-            Tunnel[cloudflare container\ncloudflared tunnel]
+            Gateway[gateway container
+HTTP or HTTPS Gateway
+API / Admin / WS / Live Proxy]
+            SRS[srs container
+RTMP ingest + HLS output]
         end
 
-        HLSData[(hls-data volume)]
+        Certs[(docker/certs)]
+        HLSData[(docker/srs/html)]
     end
 
-    Admin -->|HTTP 8080| Gateway
-    User -->|HTTP API / WS| Gateway
-    Gateway -->|mount /app/static/hls| HLSData
-    Tunnel -->|forward to gateway 8443| Gateway
-    User -->|HTTPS HLS| Tunnel
+    Admin -->|HTTP/HTTPS| Gateway
+    User -->|HTTP/HTTPS| Gateway
+    User -->|WS / WSS| Gateway
+    Gateway -->|proxy /live| SRS
+    Gateway -->|load certs when HTTPS enabled| Certs
+    SRS -->|write HLS files| HLSData
+    OBS -->|RTMP 1935| SRS
 ```
 
 ## 3. 容器内部运行设计
@@ -55,15 +66,14 @@ flowchart LR
 ```mermaid
 flowchart TB
     Entry[entrypoint.sh]
-    APIServer[uvicorn app.main:app\n0.0.0.0:8080]
-    HLSServer[python -m hls_server start\nstandalone FastAPI static service]
-    StaticDir[/app/static]
-    HLSDir[/app/static/hls]
+    Uvicorn[uvicorn app.main:app]
+    FastAPI[FastAPI app
+/api /admin /live /ws]
+    Certs[/app/certs]
 
-    Entry --> HLSServer
-    Entry --> APIServer
-    HLSServer --> HLSDir
-    APIServer --> StaticDir
+    Entry --> Uvicorn
+    Uvicorn --> FastAPI
+    Entry -->|when HTTPS enabled| Certs
 ```
 
 ### 3.2 `entrypoint.sh` 启动时序
@@ -72,14 +82,18 @@ flowchart TB
 sequenceDiagram
     participant Docker as Docker Runtime
     participant Entry as entrypoint.sh
-    participant HLS as HLS Server
-    participant API as Uvicorn Gateway
+    participant Uvicorn as Uvicorn Gateway
+    participant Certs as TLS Cert Files
 
-    Docker->>Entry: 启动容器
-    Entry->>HLS: 后台启动 HLS 服务
-    Entry->>API: 前台启动 FastAPI 网关
-    API-->>Entry: 进程结束
-    Entry->>HLS: kill HLS 子进程
+    Docker->>Entry: 启动 gateway 容器
+    Entry->>Entry: 读取 HTTPS_ENABLED / 端口 / 主机配置
+    alt HTTPS 已启用
+        Entry->>Certs: 检查 origin.crt / origin.key
+        Certs-->>Entry: 文件存在
+        Entry->>Uvicorn: 使用 SSL 参数启动
+    else HTTP 模式
+        Entry->>Uvicorn: 以普通 HTTP 模式启动
+    end
 ```
 
 ## 4. 端口、卷与环境变量
@@ -88,117 +102,158 @@ sequenceDiagram
 
 | 端口 | 所属 | 用途 |
 | --- | --- | --- |
-| `8080` | `gateway` 容器 | 对外 HTTP API、管理后台、WebSocket |
-| `8443` | `gateway` 容器内部 | HLS HTTPS 静态服务，供 Tunnel 转发 |
+| `8080` | `gateway` | local / staging 的 HTTP 入口 |
+| `443` | `gateway` | prod 的 HTTPS 入口 |
+| `1935` | `srs` | OBS RTMP 推流入口 |
+| `8088` | `srs` | Gateway 访问 SRS HLS 文件的内部 HTTP 入口 |
+
+说明：
+
+- `gateway` 实际对外暴露哪个端口，由 `GATEWAY_BIND_PORT` 与 `GATEWAY_INTERNAL_PORT` 决定
+- `prod` 目标是 `443 -> 443`
+- `staging` 允许先使用 `8080 -> 8080` 做公网集成测试
 
 ### 4.2 数据卷设计
 
 | 主机路径 | 容器路径 | 用途 |
 | --- | --- | --- |
-| `./hls-data` | `/app/static/hls` | 持久化 HLS 流文件 |
+| `./srs/html` | `/usr/local/srs/objs/nginx/html` | SRS 输出 HLS 文件 |
+| `./srs/html` | `/app/runtime/srs-html` | Gateway 读取 HLS 回退文件 |
+| `./certs` | `/app/certs` | 挂载 Cloudflare Origin CA 证书与私钥 |
 
-### 4.3 环境变量来源
+### 4.3 环境变量分组
 
-`docker/docker-compose.yml` 当前通过 `env_file` 加载：
+当前版本推荐按以下分组组织三套 `.env`：
 
-- `../gateway/.env`
+- Runtime
+- Mirror / Build Source
+- Access Strategy
+- Gateway Ports
+- HTTPS / TLS
+- Media
+- WeChat
+- Security
 
-从现有仓库看，`docker/.env` 中已经包含部署所需的一组典型变量，例如：
+关键变量示例：
 
-- `ROOT_DOMAIN`
-- `GATEWAY_BIND_IP`
-- `GATEWAY_PORT`
-- `PUBLIC_BASE_URL`
-- `LIVE_BASE_URL`
-- `PUSH_BASE_URL`
-- `CF_TUNNEL_TOKEN`
-
-说明：当前 Compose 文件与 `docker/.env` 的组织尚未完全统一，属于后续可以继续规范化的部分。
+| 字段 | 作用 |
+| --- | --- |
+| `HTTPS_ENABLED` | 是否启用 HTTPS |
+| `DOMAIN_ENABLED` | 是否启用域名模式 |
+| `CLOUDFLARE_ENABLED` | 是否进入 Cloudflare 回源场景 |
+| `GATEWAY_INTERNAL_PORT` | 容器内监听端口 |
+| `GATEWAY_BIND_PORT` | 宿主机暴露端口 |
+| `TLS_CERT_FILE` | 容器内证书路径 |
+| `TLS_KEY_FILE` | 容器内私钥路径 |
+| `PUBLIC_BASE_URL` | 当前环境对外基础地址 |
+| `PRODUCTION_PUSH_BASE` | 生产环境 RTMP 推流基础地址 |
 
 ## 5. 访问路径设计
 
-### 5.1 API 与管理后台
+### 5.1 API / Admin / WebSocket
 
 ```mermaid
 flowchart LR
     Browser[Browser]
-    MiniApp[MiniApp]
-    Gateway[Gateway 8080]
+    MiniApp[Mini Program]
+    Gateway[Gateway]
 
-    Browser -->|GET /admin| Gateway
-    MiniApp -->|POST /api/*| Gateway
-    MiniApp -->|WS /ws| Gateway
+    Browser -->|/admin| Gateway
+    Browser -->|/api| Gateway
+    MiniApp -->|/api| Gateway
+    MiniApp -->|/ws or /wss| Gateway
 ```
 
-### 5.2 HLS 访问路径
+### 5.2 播放路径
 
 ```mermaid
 flowchart LR
-    MiniApp[Player]
-    Tunnel[Cloudflare Tunnel]
-    HLS[HLS Service 8443]
+    Player[Browser / Mini Program Player]
+    Gateway[Gateway /live proxy]
+    SRS[SRS HTTP 8088]
     Files[HLS Files]
 
-    MiniApp -->|HTTPS /hls/...| Tunnel
-    Tunnel -->|forward| HLS
-    HLS --> Files
+    Player -->|GET /live/live/stream-001.m3u8| Gateway
+    Gateway -->|proxy upstream| SRS
+    SRS --> Files
 ```
 
-## 6. 启动与停止流程
+### 5.3 推流路径
 
-### 6.1 启动流程
+```mermaid
+flowchart LR
+    OBS[OBS]
+    SRS[SRS RTMP 1935]
 
-推荐从 `docker/` 目录执行：
-
-```bash
-docker compose up -d --build
+    OBS -->|rtmp://公网IP:1935/live| SRS
 ```
 
-或者：
+## 6. 三阶段部署方式
+
+### 6.1 local
+
+特点：
+
+- 使用 HTTP
+- 不启用域名
+- 不启用 Cloudflare
+
+启动命令：
 
 ```bash
-./start.sh
+cd docker
+docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
-`start.sh` 的当前职责包括：
+### 6.2 staging
 
-1. 启动 Compose 服务；
-2. 轮询 `cloudflare` 容器日志，提取 `trycloudflare.com` 域名；
-3. 将获取到的 Tunnel 地址回填到 `frontend/config/live-config.js` 中；
-4. 输出 API 与 HLS 调试地址。
+特点：
 
-### 6.2 停止流程
+- 作为公网集成测试环境
+- 允许按能力逐步开启：公网 IP -> 域名 HTTP -> 域名 HTTPS
+
+启动命令：
 
 ```bash
-./stop.sh
+cd docker
+docker compose --env-file .env.staging -f docker-compose.yml -f docker-compose.staging.yml up -d --build
 ```
 
-脚本本质上执行：
+### 6.3 prod
+
+特点：
+
+- 统一收口到 HTTPS / WSS
+- 通过 Cloudflare + Gateway 实现正式接入
+- 需要证书挂载到 `docker/certs/`
+
+启动命令：
 
 ```bash
-docker compose down
+cd docker
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
 ## 7. 当前部署特点
 
 ### 7.1 优点
 
-- 启动路径简单，适合课程演示和联调。
-- HLS、API、管理后台可以围绕同一网关容器组织。
-- 借助 Tunnel，可以较方便解决移动端 HTTPS/HLS 调试问题。
+- 网关与媒体服务职责分离，结构清晰
+- 同一套代码可在 local / staging / prod 之间切换
+- HTTPS 被纳入基础设施层，而不是侵入业务子系统
+- `/api`、`/admin`、`/live`、`/ws` 统一由 Gateway 管理
 
 ### 7.2 局限
 
-- 前端工程未被正式纳入 Compose 编排。
-- Cloudflare Tunnel 依赖临时地址，适合演示，不适合作为正式生产方案。
-- HLS 与 API 共同绑定在 `gateway` 容器生命周期内，长期演进时可以考虑拆分。
-- 环境变量文件位置与职责尚有整理空间。
+- OBS 推流仍依赖公网 IP 与 RTMP 端口
+- Cloudflare 只参与 HTTP/HTTPS 链路，不参与 RTMP
+- 当前仍处于快速原型阶段，正式生产还需要更多监控与安全加固
 
-## 8. 建议的后续演进
+## 8. 后续演进建议
 
 | 方向 | 建议 |
 | --- | --- |
-| 配置管理 | 明确 `gateway/.env` 与 `docker/.env` 的职责边界 |
-| 前端部署 | 将 `frontend/` 的构建产物与发布方式纳入统一部署文档 |
-| 正式 HTTPS | 用正式域名和证书替代临时 Tunnel |
-| 服务拆分 | 如系统规模扩大，可将 HLS 与 API 网关拆成独立服务 |
+| HTTPS 联调 | 补齐 prod 的真实证书落位与回源验证记录 |
+| WebSocket | 补充 `WSS` 联调说明与异常处理清单 |
+| 文档体系 | 保持 `docker-deployment`、`local-to-production-guide`、`api-reference` 三份文档同步演进 |
+| 架构治理 | 随着规模扩大，进一步明确媒体层与网关基础设施层的边界 |

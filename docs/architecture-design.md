@@ -1,19 +1,19 @@
-﻿# Live Project 软件架构设计说明
+# Live Project 软件架构设计说明
 
-> 文档定位：面向初级软件工程课程的正式设计说明
-> 设计粒度：系统 -> 子系统 -> 模块 -> 构件（类）
+> 文档定位：面向初级软件工程课程的正式设计说明  
+> 设计粒度：系统 -> 子系统 -> 模块 -> 构件（类）  
 > 表达方式：Markdown + Mermaid（UML 2.0 风格）
 
-## 1. 设计目标
+## 1. 当前版本架构概览
 
-本项目服务于“直播辩论”场景，目标是在课程项目范围内完成一个具备前后端联调、直播状态控制、实时消息推送与基础部署能力的软件系统原型。
+当前版本采用“模块化单体网关 + 独立媒体服务”的结构。
 
-从代码实现看，系统当前采用的是“模块化单体 + 独立辅助服务”的设计方式：
-
-- 统一入口由 `gateway/app/main.py` 提供。
-- 业务能力主要集中在 `stream` 与 `wechat` 子系统。
-- `WebSocket`、`鉴权`、`静态资源托管`、`日志` 作为基础设施支撑业务模块。
-- `HLS` 由独立 FastAPI 静态服务承载，并通过 `entrypoint.sh` 与网关一起启动。
+- FastAPI gateway 是对外统一入口
+- 微信小程序 frontend 独立发布到微信，不参与 Docker 部署
+- Admin 静态资源位于 gateway 内部，由网关统一托管
+- SRS 作为独立媒体服务，接收 OBS 的 RTMP 推流，输出 HLS 播放资源
+- 网关通过 `/live/...` 代理 HLS 播放请求
+- 小程序前端目前已支持本地模拟器、真机局域网、IP 调试、IP 上线四种运行模式
 
 ## 2. 系统级架构
 
@@ -21,57 +21,57 @@
 
 ```mermaid
 flowchart LR
-    MiniApp[MiniApp Client]
-    Admin[Admin Browser]
+    MiniApp[微信小程序]
+    Admin[Admin 浏览器]
     Gateway[FastAPI Gateway]
-    HLS[HLS Service]
-    WX[Wechat API]
-    Tunnel[Cloudflare Tunnel]
+    SRS[SRS Media Server]
+    WX[WeChat API]
+    OBS[OBS Client]
 
     MiniApp -->|HTTP API| Gateway
     MiniApp -->|WebSocket| Gateway
-    MiniApp -->|HLS Play| Tunnel
-    Admin -->|HTTP /admin| Gateway
-    Gateway -->|Login for openid| WX
-    Tunnel -->|Forward HTTPS HLS| HLS
+    MiniApp -->|HLS /live/...| Gateway
+    Admin -->|/admin| Gateway
+    Gateway -->|jscode2session| WX
+    Gateway -->|proxy hls| SRS
+    OBS -->|RTMP| SRS
 ```
 
-### 2.2 系统分层图
+### 2.2 分层图
 
 ```mermaid
 flowchart TB
     S[Live Project]
+    S --> C[客户端层]
+    S --> G[网关层]
+    S --> M[媒体层]
+    S --> I[基础设施层]
+    S --> D[部署层]
 
-    S --> C[Client Layer]
-    S --> G[Gateway Layer]
-    S --> I[Infrastructure Layer]
-    S --> D[Deployment Layer]
-
-    C --> C1[MiniApp Client]
-    C --> C2[Admin Browser]
-
-    G --> G1[Wechat Subsystem]
-    G --> G2[Stream Subsystem]
-
+    C --> C1[MiniApp]
+    C --> C2[Admin]
+    G --> G1[Wechat]
+    G --> G2[Stream]
+    G --> G3[Media Proxy]
+    M --> M1[SRS]
     I --> I1[Auth]
     I --> I2[WS]
     I --> I3[Static]
     I --> I4[Logger]
-    I --> I5[HLS]
-
     D --> D1[Docker Compose]
     D --> D2[Gateway Container]
-    D --> D3[Cloudflare Tunnel]
+    D --> D3[SRS Container]
 ```
 
-### 2.3 系统设计说明
+### 2.3 系统说明
 
 | 层次 | 当前实现 | 说明 |
 | --- | --- | --- |
-| 系统 | `Live Project` | 面向直播辩论场景的课程项目原型 |
-| 子系统 | `stream`、`wechat`、`hls`、`auth/ws/static/logger` | 业务子系统与基础设施子系统并存 |
-| 模块 | `live`、`vote`、`debate`、`user`、`dashboard` 等 | `stream` 子系统内部按业务模块拆分 |
-| 构件 | `LiveService`、`VoteService`、`ConnectionManager`、`MockRepository` 等 | 构件层以类、模型、路由处理器为主 |
+| 系统 | Live Project | 面向直播辩论场景的课程项目 |
+| 子系统 | wechat、stream、auth/ws/static/logger、media proxy | 业务子系统与基础设施子系统共同组成 gateway |
+| 模块 | live、vote、debate、user、dashboard 等 | stream 内部按业务职责拆分 |
+| 构件 | LiveService、VoteService、ConnectionManager、MockRepository 等 | 以 class、service、router 为主 |
+| 独立服务 | SRS | 提供 RTMP 推流与 HLS 输出 |
 
 ## 3. 子系统设计
 
@@ -82,13 +82,11 @@ classDiagram
     class LiveProject {
       +gateway/app/main.py
     }
-
     class WechatSubsystem {
       +router
       +service
       +models
     }
-
     class StreamSubsystem {
       +live
       +vote
@@ -101,38 +99,39 @@ classDiagram
       +dashboard
       +repository
     }
-
     class InfraSubsystem {
       +auth
       +ws
       +static
       +logger
     }
-
-    class HLSSubsystem {
-      +server
+    class MediaProxySubsystem {
+      +router
       +config
-      +certs
-      +script
+    }
+    class SRSService {
+      +rtmp ingest
+      +hls output
     }
 
     LiveProject --> WechatSubsystem
     LiveProject --> StreamSubsystem
     LiveProject --> InfraSubsystem
-    LiveProject --> HLSSubsystem
+    LiveProject --> MediaProxySubsystem
+    MediaProxySubsystem --> SRSService
 ```
 
-### 3.2 子系统职责说明
+### 3.2 子系统职责表
 
 | 子系统 | 路径 | 职责 |
 | --- | --- | --- |
-| Wechat 子系统 | `gateway/app/subsystems/wechat/` | 完成微信登录、换取 `openid`、生成 JWT，并调用用户注册逻辑 |
-| Stream 子系统 | `gateway/app/subsystems/stream/` | 提供直播流、投票、辩题、评委、统计、用户等核心业务能力 |
-| WS 通信子系统 | `gateway/app/comm/ws/` | 维护 WebSocket 连接、注册信息、直播间观众集合、广播消息 |
-| Auth 子系统 | `gateway/app/infra/auth/` | 统一处理 JWT 白名单与请求鉴权 |
-| Static 子系统 | `gateway/app/infra/static/` | 挂载 `/admin` 和 `/static` 静态资源目录 |
-| HLS 子系统 | `gateway/app/subsystems/hls/` | 提供 HLS 静态文件 HTTPS 服务 |
-| Logger 子系统 | `gateway/app/utils/logger/` | 提供统一日志输出 |
+| Wechat 子系统 | `gateway/app/subsystems/wechat/` | 微信登录、openid 换取、JWT 生成 |
+| Stream 子系统 | `gateway/app/subsystems/stream/` | 直播流、投票、辩题、评委、统计、用户等主体业务 |
+| WS 子系统 | `gateway/app/comm/ws/` | WebSocket 连接管理、在线状态、消息广播 |
+| Auth 子系统 | `gateway/app/infra/auth/` | 统一鉴权与白名单放行 |
+| Static 子系统 | `gateway/app/infra/static/` | 托管 `/admin` 和 `/static` 静态资源 |
+| Media Proxy 子系统 | `gateway/app/infra/media_proxy/` | 统一暴露 `/live/...` 播放路径，代理 SRS 资源 |
+| SRS 媒体服务 | `docker/srs/` | 接收 OBS RTMP 推流，生成 HLS 播放资源 |
 
 ## 4. 模块设计
 
@@ -151,33 +150,18 @@ flowchart TB
     Stream --> User[user]
     Stream --> Dashboard[dashboard]
     Stream --> Statistics[statistics]
-
-    Live --> Repo
-    Vote --> Repo
-    Debate --> Repo
-    DebateFlow --> Repo
-    Judge --> Repo
-    AIContent --> Repo
-    User --> Repo
-    Dashboard --> Live
-    Dashboard --> Vote
-    Dashboard --> Debate
 ```
 
 ### 4.2 模块职责表
 
 | 模块 | 主要文件 | 职责 |
 | --- | --- | --- |
-| `repository` | `repository/mock.py` | 提供当前系统的内存数据存储与 CRUD 能力 |
-| `live` | `live/router.py`、`live/service.py`、`live/models.py` | 直播流管理、直播开始/停止、直播状态查询 |
+| `repository` | `repository/mock.py` | 提供内存数据存储与 CRUD 能力 |
+| `live` | `live/router.py`、`live/service.py`、`live/models.py` | 直播流管理、开播、停播、状态查询 |
 | `vote` | `vote/router.py`、`vote/service.py`、`vote/models.py` | 用户投票、管理员设票、票数广播 |
-| `debate` | `debate/router.py`、`debate/service.py`、`debate/models.py` | 辩题创建、更新、绑定直播流 |
-| `debate_flow` | `debate_flow/*` | 辩论流程与环节控制 |
-| `judge` | `judge/*` | 评委信息管理 |
-| `ai_content` | `ai_content/*` | AI 内容、评论、点赞等相关管理 |
-| `user` | `user/router.py`、`user/service.py` | 用户列表、在线状态判定 |
+| `debate` | `debate/router.py`、`debate/service.py`、`debate/models.py` | 辩题创建、修改、绑定直播流 |
 | `dashboard` | `dashboard/router.py`、`dashboard/service.py` | 聚合直播状态、票数、辩题、AI 状态等信息 |
-| `statistics` | `statistics/*` | 统计数据查询与展示支持 |
+| `media_proxy` | `infra/media_proxy/router.py` | 代理 m3u8 清单和分片资源 |
 
 ## 5. 构件（类）设计
 
@@ -187,99 +171,61 @@ flowchart TB
 classDiagram
     class AuthMiddleware {
       +dispatch(request, call_next)
-      -_is_whitelisted(path)
     }
-
     class ConnectionManager {
-      -_clients: set
-      -_client_info: dict
-      -_stream_viewers: dict
       +connect(ws)
       +disconnect(ws)
       +register(ws, info)
       +broadcast(message)
-      +send(ws, message)
-      +get_total_connections() int
-      +get_stream_viewers(stream_id) int
-      +get_online_user_ids() set
     }
-
     class MockRepository {
-      -_streams
-      -_live_statuses
-      -_debates
-      -_votes
-      -_users
       +list_streams()
       +get_stream(stream_id)
       +start_live(stream_id)
       +stop_live(stream_id)
       +get_votes(stream_id)
-      +add_votes(stream_id, left, right)
-      +list_users()
-      +get_or_create_user(user_id, nickname, avatar)
     }
-
     class LiveService {
       +list_streams()
-      +create_stream(name, url, type_, description)
-      +update_stream(stream_id, **kwargs)
-      +delete_stream(stream_id)
-      +get_live_status(stream_id)
       +start_live(stream_id)
       +stop_live(stream_id)
-      +get_viewers_count(stream_id)
     }
-
     class VoteService {
       +get_votes(stream_id)
       +user_vote(stream_id, left, right)
-      +admin_update_votes(stream_id, left, right, action)
-      +admin_set_votes(stream_id, left, right)
-      +reset_votes(stream_id, reset_to, save_backup)
     }
-
-    class UserService {
-      +register_or_get_user(user_id, nickname, avatar)
-      +list_users(page, page_size, search_term, status)
-    }
-
     class DashboardService {
       +get_dashboard(stream_id)
-      +get_viewers()
-      +get_viewers_count(stream_id)
     }
-
     class WechatLoginService {
       +login(code, user_info)
-      -_jscode2session(code)
+    }
+    class MediaProxyRouter {
+      +proxy_hls(path)
     }
 
-    AuthMiddleware --> WechatLoginService : protects requests
-    LiveService --> MockRepository : reads/writes
-    VoteService --> MockRepository : reads/writes
-    UserService --> MockRepository : reads/writes
-    DashboardService --> LiveService : aggregate
-    DashboardService --> VoteService : aggregate
-    DashboardService --> ConnectionManager : query viewers
-    VoteService --> ConnectionManager : broadcast
-    LiveService --> ConnectionManager : broadcast
-    UserService --> ConnectionManager : online users
-    WechatLoginService --> UserService : register user
+    LiveService --> MockRepository
+    VoteService --> MockRepository
+    DashboardService --> LiveService
+    DashboardService --> VoteService
+    VoteService --> ConnectionManager
+    LiveService --> ConnectionManager
+    WechatLoginService --> MockRepository
+    MediaProxyRouter --> SRS
 ```
 
 ### 5.2 构件说明
 
 | 构件 | 类型 | 作用 |
 | --- | --- | --- |
-| `AuthMiddleware` | 基础设施构件 | 负责统一鉴权与白名单放行 |
-| `ConnectionManager` | 通信构件 | 负责连接管理、在线状态与广播 |
-| `MockRepository` | 数据构件 | 提供当前版本的内存数据源 |
-| `LiveService` | 业务构件 | 封装直播流管理与状态切换 |
-| `VoteService` | 业务构件 | 封装投票计算与实时广播 |
-| `UserService` | 业务构件 | 管理用户注册与在线状态整合 |
-| `DashboardService` | 聚合构件 | 为管理端汇总多模块数据 |
-| `WechatLoginService` | 外部接口构件 | 与微信接口交互并生成令牌 |
+| `AuthMiddleware` | 基础设施构件 | 统一鉴权与白名单放行 |
+| `ConnectionManager` | 通信构件 | WebSocket 连接管理、在线状态与消息广播 |
+| `MockRepository` | 数据构件 | 当前版本的内存数据源 |
+| `LiveService` | 业务构件 | 直播流管理与状态切换 |
+| `VoteService` | 业务构件 | 投票计算与实时广播 |
+| `DashboardService` | 聚合构件 | 后台统计信息汇总 |
+| `WechatLoginService` | 外部接口构件 | 与 WeChat API 交互并生成令牌 |
+| `MediaProxyRouter` | 媒体入口构件 | 提供统一的 `/live/...` 播放地址 |
 
 ## 6. 关键运行流程
 
@@ -290,73 +236,80 @@ sequenceDiagram
     participant Client as MiniApp
     participant Gateway as Wechat Router
     participant Service as WechatLoginService
-    participant WX as Wechat API
-    participant UserSvc as UserService
+    participant WX as WeChat API
+    participant Repo as MockRepository
 
     Client->>Gateway: POST /api/wechat-login
     Gateway->>Service: login(code, userInfo)
     Service->>WX: jscode2session
     WX-->>Service: openid, session_key
-    Service->>UserSvc: register_or_get_user(openid,...)
+    Service->>Repo: get_or_create_user(...)
     Service-->>Gateway: token + userId + userInfo
-    Gateway-->>Client: 登录结果
+    Gateway-->>Client: login result
 ```
 
-### 6.2 投票广播时序图
+### 6.2 播放访问时序图
 
 ```mermaid
 sequenceDiagram
-    participant Client as MiniApp User
-    participant API as Vote Router
-    participant VoteSvc as VoteService
-    participant Repo as MockRepository
-    participant WS as ConnectionManager
-    participant Others as Other Clients
+    participant MiniApp as MiniApp
+    participant Gateway as Media Proxy
+    participant SRS as SRS Server
 
-    Client->>API: POST /api/v1/user-vote
-    API->>VoteSvc: user_vote(streamId,left,right)
-    VoteSvc->>Repo: add_votes(...)
-    VoteSvc->>Repo: get_votes(...)
-    VoteSvc->>WS: broadcast(votes-updated)
-    WS-->>Others: WebSocket 广播
-    VoteSvc-->>API: 投票结果
-    API-->>Client: success
+    MiniApp->>Gateway: GET /live/stream-001.m3u8
+    Gateway->>SRS: proxy request
+    SRS-->>Gateway: m3u8 / ts
+    Gateway-->>MiniApp: play resource
 ```
 
-### 6.3 直播控制活动图
+## 7. 部署架构
+
+### 7.1 Docker 部署图
 
 ```mermaid
-flowchart TD
-    A([Start Live Request]) --> B[POST /api/v1/admin/live/start]
-    B --> C[LiveService.start_live]
-    C --> D[MockRepository.start_live]
-    D --> E[Build status data]
-    E --> F[ConnectionManager.broadcast liveStatus]
-    F --> G[Clients refresh status]
-    G --> H([End])
+flowchart LR
+    Browser[Admin Browser]
+    MiniApp[MiniApp]
+    GatewayC[gateway container]
+    SRSC[srs container]
+    OBS[OBS]
+
+    Browser -->|8080| GatewayC
+    MiniApp -->|8080 api/live| GatewayC
+    GatewayC -->|proxy hls| SRSC
+    OBS -->|1935 rtmp| SRSC
 ```
 
-## 7. 架构特点与局限
+### 7.2 部署说明
 
-### 7.1 架构特点
+| 项目 | 当前版本 |
+| --- | --- |
+| 网关服务 | FastAPI，提供 API、Admin、WebSocket、播放代理 |
+| 媒体服务 | SRS，负责 RTMP 推流与 HLS 输出 |
+| 前端发布 | 微信小程序独立发布，不纳入 Docker |
+| Admin 发布 | 静态文件随 gateway 一起部署 |
+| 环境切换 | local / staging / prod |
 
-- 统一入口明确：所有 HTTP 与 WebSocket 访问先进入网关。
-- 模块划分清晰：`stream` 子系统内部已经形成比较稳定的模块边界。
-- 基础设施内聚：鉴权、静态资源、日志、WebSocket 都独立在基础设施目录下。
-- 易于教学说明：符合初级软件工程中“系统-子系统-模块-构件”的层次表达。
+## 8. 架构特点与局限
 
-### 7.2 当前局限
+### 8.1 架构特点
 
-- 数据层仍为 `MockRepository`，不具备持久化和并发一致性保障。
-- `stream` 内部虽然模块化，但尚未真正拆分成独立部署服务。
-- Docker 编排当前仅覆盖网关与 Cloudflare Tunnel，不含完整前端发布链路。
-- 部分业务链路仍存在同步性与状态一致性问题，详见根目录 `README.md`。
+- 统一入口明确：HTTP、WebSocket、Admin 和 `/live/...` 都由 gateway 对外暴露
+- 媒体职责清晰：SRS 负责媒体协议，gateway 负责业务控制
+- 前后端边界明确：frontend 独立发布，Admin 由 gateway 托管
+- 符合初级软件工程设计的层次表达方式
 
-## 8. 演进建议
+### 8.2 当前局限
+
+- 数据层仍然为 `MockRepository`，不具备持久化能力
+- 项目目前仍以 HTTP 访问为主，HTTPS 属于后续改进方向
+- 媒体层已独立，但整体仍处于课程原型阶段
+
+## 9. 演进建议
 
 | 阶段 | 建议 |
 | --- | --- |
-| 第一步 | 为 `repository` 增加数据库实现，保留当前服务层接口 |
-| 第二步 | 为 WebSocket 注册、用户在线状态、AI 内容同步补齐测试 |
-| 第三步 | 将前端正式发布链路纳入统一部署方案 |
-| 第四步 | 根据需要把 `stream` 的高耦合模块拆分成独立服务 |
+| 第一步 | 为 repository 提供数据库实现 |
+| 第二步 | 补齐直播状态同步和 WebSocket 注册测试 |
+| 第三步 | 把 SRS 接入、回调管理、播放地址生成沉淀为正式 media 子系统 |
+| 第四步 | 根据上线需求补齐 HTTPS、域名和统一接入层 |

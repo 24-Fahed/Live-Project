@@ -50,6 +50,7 @@ docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.loc
 - `docs/local-to-production-guide.md`：从本地到上线的环境切换与操作教程
 - `docs/obs-push-to-server-guide.md`：OBS 推流到服务器教程
 - `docs/api-reference.md`：项目级 RESTful API 文档
+- `docs/gateway-config-guide.md`：网关配置说明文档
 - `docs/interviewer-architecture-notes.md`：面试官说明与踩坑总结
 - `docs/v0.1.2/v0.1.2-planning-draft.md`：`v0.1.2` 版本规划草案
 - `frontend/docs/hbuilderx-run-modes.md`：HBuilderX 运行模式说明
