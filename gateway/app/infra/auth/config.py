@@ -1,36 +1,32 @@
-"""Authentication and identity-related settings."""
+"""认证与身份相关配置。"""
 
 from pydantic_settings import BaseSettings
 
 
-class JWTSettings(BaseSettings):
-    """JWT and gateway-auth related settings."""
+class AuthSettings(BaseSettings):
+    """JWT 与网关认证相关配置。"""
 
-    # Secret used to sign JWT tokens in development and deployment environments.
-    JWT_SECRET: str = "dev-secret-key"
+    # 开发与部署环境中用于签发 JWT 的密钥。
+    JWT_SECRET: str = "change-me-in-production"
 
-    # Signing algorithm used by the JWT helper.
+    # JWT 签名算法。
     JWT_ALGORITHM: str = "HS256"
 
-    # Token lifetime in hours.
-    JWT_EXPIRE_HOURS: int = 168
+    # Token 有效期，单位为小时。
+    JWT_EXPIRE_HOURS: int = 24
 
-    # Prefix-based whitelist. Requests matching these paths can pass through the
-    # auth middleware without a JWT token. This list should stay short and should
-    # only contain true public endpoints.
+    # 按路径前缀匹配的白名单。命中这些路径的请求可跳过 JWT 校验。
+    # 这里应保持精简，只保留真正公开的入口。
     AUTH_WHITELIST: list[str] = [
-        "/api/wechat-login",
-        "/api/v1/debate-topic",
-        "/api/v1/ai-content",
-        "/api/v1/comment",
-        "/api/v1/like",
+        "/",
         "/health",
-        "/admin",
-        "/static",
-        "/ws",
         "/docs",
         "/openapi.json",
+        "/admin",
+        "/static",
         "/live",
+        "/api/v1/wechat/login",
+        "/api/v1/wechat/profile",
     ]
 
     class Config:
@@ -40,12 +36,12 @@ class JWTSettings(BaseSettings):
 
 
 class WechatSettings(BaseSettings):
-    """Settings used by the WeChat login subsystem."""
+    """微信登录子系统使用的配置。"""
 
-    # WeChat mini program app ID.
+    # 微信小程序 AppID。
     WECHAT_APPID: str = ""
 
-    # WeChat mini program app secret.
+    # 微信小程序 AppSecret。
     WECHAT_SECRET: str = ""
 
     class Config:
@@ -54,5 +50,5 @@ class WechatSettings(BaseSettings):
         extra = "ignore"
 
 
-jwt_settings = JWTSettings()
+auth_settings = AuthSettings()
 wechat_settings = WechatSettings()

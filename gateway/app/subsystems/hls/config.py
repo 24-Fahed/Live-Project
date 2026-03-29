@@ -1,31 +1,17 @@
-"""Legacy HLS demo configuration.
+"""历史 HLS 演示配置。
 
-This subsystem comes from an earlier demonstration stage of the project. It is no
-longer the main media solution in the current architecture, where SRS handles
-RTMP ingest and HLS output.
+当前项目已经不再依赖独立的 HLS 演示子系统，但保留这份配置是为了：
+- 兼容旧版本代码与历史文档
+- 方便回看早期演示实现
 
-The configuration is kept only for historical compatibility and code reading.
+新版本的媒体播放应以 SRS + 网关代理方案为准。
 """
 
-# Legacy demo host/port for the standalone HLS service.
-HLS_HOST = "0.0.0.0"
-HLS_PORT = 8443
+from pathlib import Path
 
-# Local directory and public mount prefix used by the demo HLS service.
-HLS_BASE_DIR = "static/hls"
-HLS_MOUNT_PREFIX = "/hls"
 
-# HTTPS switch for the legacy HLS demo service.
-# In the current architecture, formal HTTPS is handled by the gateway
-# infrastructure layer rather than by this demo module.
-HLS_ENABLE_SSL = False
+# 旧版示例中存放 HLS 文件的本地目录。
+HLS_DIR = Path("runtime/hls")
 
-# Certificate locations used only when the legacy HLS demo enables SSL.
-CERT_DIR = "app/subsystems/hls/certs"
-CERT_FILE = f"{CERT_DIR}/server.crt"
-KEY_FILE = f"{CERT_DIR}/server.key"
-
-# Certificate generation defaults for the demo HLS service.
-CERT_VALIDITY_DAYS = 3650  # 10 years
-CERT_COMMON_NAME = "localhost"
-CERT_SAN_NAMES = ["localhost", "127.0.0.1", "0.0.0.0"]
+# 演示视频源路径，仅用于早期样例或回溯历史逻辑。
+DEMO_VIDEO = Path("stream/stream-001.mp4")

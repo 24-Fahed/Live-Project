@@ -1,15 +1,15 @@
-"""Static mount table for the FastAPI gateway.
+"""FastAPI 网关的静态资源挂载表。
 
-Each tuple means:
-``(mount_path, directory, html_mode)``.
+这里集中维护静态目录的挂载规则，避免把路径信息分散写进主程序。
 """
 
 from pathlib import Path
 
-# Static mount registration table:
-# - /admin serves the built Admin front-end and therefore enables HTML mode.
-# - /static serves shared static assets such as icons and scripts.
-_MOUNTS: list[tuple[str, str, bool]] = [
-    ("/admin", "static/admin", True),
-    ("/static", "static", False),
+
+# 静态挂载注册表：
+# - /admin 用于托管后台管理前端，因此需要开启 HTML 模式。
+# - /static 用于托管共享静态资源，例如图标、脚本等。
+STATIC_MOUNTS = [
+    ("/admin", Path("static/admin"), True),
+    ("/static", Path("static"), False),
 ]
