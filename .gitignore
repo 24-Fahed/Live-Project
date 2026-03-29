@@ -164,6 +164,7 @@ typings/
 
 # dotenv environment variables file
 .env.local
+!docker/.env.local
 .env.development.local
 .env.test.local
 .env.production.local
@@ -266,3 +267,6 @@ gateway/static/hls/
 gateway/runtime/
 frontend/node_modules/
 frontend/unpackage/
+# HTTPS certificates
+docker/certs/*
+!docker/certs/README.md

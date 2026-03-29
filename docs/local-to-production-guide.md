@@ -1,65 +1,86 @@
-﻿# 从本地调试到服务器上线的操作教程
+# 从本地调试到服务器上线的操作教程
 
-> 本文档面向当前项目的下一个版本，目标是指导你完成：
-> 本地开发 -> 服务器联调 -> 正式上线。
-> 核心原则：不同阶段的 IP、域名、端口切换通过 Docker 配置完成，而不是改代码。
+> 本文档对应 `v0.1.2` 方案。
+> 目标是让我们通过同一套代码，在不同 Docker 环境变量下完成：
+> `local -> staging -> prod`。
 
-## 1. 先理解三个阶段
+## 1. 三个阶段的职责
 
-下一个版本建议把整个部署过程分成三个阶段：
+### 1.1 local
 
-### 1.1 本地开发阶段
+`local` 只负责业务闭环和基础联调。
 
-特点：
+重点验证：
 
-- 在自己电脑上运行 Docker
-- 使用本机 IP 或局域网 IP
-- 不依赖 DNS
-- 主要验证功能是否跑通
+- Gateway 是否正常启动
+- SRS 是否正常启动
+- OBS 是否能推流到本地 SRS
+- `/live/...` 是否能播放
+- Admin、API、WebSocket 是否工作正常
 
-这一阶段要回答的问题是：
+在这一阶段：
 
-- SRS 能不能收到 OBS 推流？
-- Gateway 能不能正常工作？
-- 播放地址能不能访问？
-- 业务系统能不能感知媒体状态？
+- 不要求域名
+- 不要求 HTTPS
+- 不要求 Cloudflare
 
-### 1.2 服务器联调阶段
+### 1.2 staging
 
-特点：
+`staging` 是公网集成测试环境。
 
-- 部署到公网服务器
-- 先使用公网 IP 调试
-- 域名可以先不启用，或者最后再启用
-- 重点是验证公网网络链路
+它不是正式上线环境，而是用来按能力增量逐步验证：
 
-这一阶段要回答的问题是：
+1. 公网 IP + HTTP
+2. 域名 + HTTP
+3. 域名 + HTTPS
 
-- 公网 IP 能不能成功推流？
-- 公网 IP 能不能成功播放？
-- 服务器防火墙和 Docker 映射是否正确？
-- 服务重启后能不能恢复？
+这一阶段的重点不是新业务功能，而是：
 
-### 1.3 正式上线阶段
+- 公网 IP 连通性
+- 域名解析是否正常
+- Cloudflare DNS 是否正确
+- HTTPS / WSS 是否正确
+- 回源到 Gateway 是否正确
 
-特点：
+### 1.3 prod
 
-- 启用域名
-- 启用 Cloudflare DNS
-- 使用正式访问地址
-- 验证稳定性和可重复部署能力
+`prod` 是正式上线环境。
 
-这一阶段要回答的问题是：
+当前版本目标是：
 
-- 域名访问是否正常？
-- API / Admin / 播放是否都正常？
-- 推流、播放、回调是否完整闭环？
+- `Admin` 走 HTTPS
+- `API` 走 HTTPS
+- `/live` 播放走 HTTPS
+- WebSocket 走 WSS
+- OBS 继续通过公网 IP 的 RTMP 端口推流
 
-## 2. 推荐的 Docker 组织方式
+## 2. 当前版本的协议策略
 
-建议采用“基础 Compose + 环境覆盖文件 + 环境变量文件”的方式。
+### 2.1 用户访问入口
 
-### 2.1 文件组织建议
+- local：`http://127.0.0.1:8080`
+- staging 第一阶段：`http://公网IP:8080`
+- staging 第二阶段：`http://域名`
+- staging 第三阶段 / prod：`https://域名`
+
+### 2.2 WebSocket
+
+- HTTP 页面对应：`ws://host/ws`
+- HTTPS 页面对应：`wss://host/ws`
+
+### 2.3 OBS 推流
+
+无论 staging 还是 prod，当前都保持最简单方案：
+
+- `rtmp://公网IP:1935/live`
+
+说明：
+
+- Cloudflare 负责 HTTP/HTTPS 入口
+- RTMP 不走 Cloudflare 代理
+- 因此正式上线后，OBS 依然建议继续推送到公网 IP
+
+## 3. Docker 文件组织
 
 ```text
 docker/
@@ -67,524 +88,205 @@ docker/
 ├─ docker-compose.local.yml
 ├─ docker-compose.staging.yml
 ├─ docker-compose.prod.yml
+├─ .env
 ├─ .env.local
 ├─ .env.staging
 ├─ .env.prod
-├─ start.sh
-├─ start-staging.sh
-└─ start-prod.sh
+├─ certs/
+│  └─ README.md
+└─ srs/
 ```
 
 说明：
 
-- `docker-compose.yml`：基础通用配置，包含 `gateway + srs`
-- `docker-compose.local.yml`：本地开发时附加的环境文件声明
-- `docker-compose.staging.yml`：服务器联调时附加的环境文件声明
-- `docker-compose.prod.yml`：正式上线时附加的环境文件声明
-- `.env.*`：每个阶段自己的地址、端口、域名配置
+- `docker-compose.yml`：基础服务定义
+- `docker-compose.local.yml`：local 环境变量入口
+- `docker-compose.staging.yml`：staging 环境变量入口
+- `docker-compose.prod.yml`：prod 环境变量入口
+- `certs/`：存放 Cloudflare Origin CA 证书和私钥
 
-## 3. 当前 `.env` 字段的完整说明
+## 4. `.env` 设计原则
 
-这部分是为了和当前项目里的 `docker/.env.local`、`docker/.env.staging`、`docker/.env.prod` 保持完全一致。
+当前阶段继续保留：
 
-### 3.1 运行阶段字段
+- `.env.local`
+- `.env.staging`
+- `.env.prod`
 
-| 字段 | 作用 | 是否必须配置 | 说明 |
-| --- | --- | --- | --- |
-| `APP_ENV` | 当前环境名 | 是 | 可取 `local` / `staging` / `production` |
-| `APP_RUNTIME_MODE` | 当前运行模式 | 是 | 当前和 `APP_ENV` 保持一致即可 |
-| `USE_DOMAIN` | 是否使用域名作为用户访问入口 | 是 | 本地一般为 `false`，正式上线一般为 `true` |
-| `USE_PUBLIC_IP` | 是否使用公网 IP 参与访问策略 | 是 | 本地一般为 `false`，服务器联调和线上一般为 `true` |
+不再继续拆成更多物理文件，但在每个文件内部统一分组：
 
-### 3.2 网关访问地址字段
+1. Runtime
+2. Mirror / Build Source
+3. Access Strategy
+4. Gateway Ports
+5. HTTPS / TLS
+6. Media
+7. WeChat
+8. Security
 
-| 字段 | 作用 | 是否必须配置 | 说明 |
-| --- | --- | --- | --- |
-| `LOCAL_BASE_URL` | 本地开发阶段的网关基础地址 | 是 | 例如 `http://127.0.0.1:8080` |
-| `STAGING_BASE_URL` | 服务器联调阶段的网关基础地址 | 建议配置 | 即使本地阶段不用，也建议保留 |
-| `PUBLIC_BASE_URL` | 正式对外使用的基础地址 | 是 | 生产阶段通常是域名地址 |
-| `PUBLIC_DOMAIN` | 正式域名 | 生产阶段必须 | 本地和联调阶段可以留空，属于预留字段 |
-| `GATEWAY_PORT` | 网关对外端口 | 是 | 当前默认 `8080` |
-| `USE_CLOUDFLARE_DNS` | 是否进入 Cloudflare DNS 场景 | 生产阶段建议配置 | 本地和联调阶段通常为 `false`，属于预留控制字段 |
+这样做的目标是：
 
-### 3.3 媒体服务器字段
+- 结构统一
+- 便于比较环境差异
+- 不需要通过改代码切换协议与入口
 
-| 字段 | 作用 | 是否必须配置 | 说明 |
-| --- | --- | --- | --- |
-| `SRS_IMAGE` | SRS 容器镜像地址 | 是 | 当前建议使用国内可访问镜像，例如 `docker.m.daocloud.io/ossrs/srs:5` |
-| `SRS_HOST` | Gateway 访问 SRS 的主机名 | 是 | 当前 Docker 内固定使用 `srs` |
-| `SRS_RTMP_PORT` | SRS RTMP 推流端口 | 是 | 当前默认 `1935` |
-| `SRS_HTTP_PORT` | SRS HTTP 播放端口 | 是 | 当前默认 `8088` |
-| `SRS_APP` | SRS 中的应用名 | 是 | 当前默认 `live` |
-| `SRS_PLAY_PATH_PREFIX` | 网关侧统一播放路径前缀 | 是 | 当前默认 `/live` |
-| `ALLOW_DIRECT_IP_PUSH` | 是否允许 OBS 直接用公网 IP 推流 | 是 | 当前建议保持 `true` |
+## 5. 三套 `.env` 里的关键开关
 
-### 3.4 推流地址字段
+### 5.1 Access Strategy
 
-| 字段 | 作用 | 是否必须配置 | 说明 |
-| --- | --- | --- | --- |
-| `LOCAL_PUSH_BASE` | 本地开发阶段 OBS 推流基础地址 | 是 | 例如 `rtmp://127.0.0.1:1935/live` |
-| `STAGING_PUSH_BASE` | 服务器联调阶段 OBS 推流基础地址 | 建议配置 | 联调阶段通常改为公网 IP |
-| `PRODUCTION_PUSH_BASE` | 正式上线阶段 OBS 推流基础地址 | 建议配置 | 当前阶段通常仍然是公网 IP |
+| 字段 | 作用 |
+| --- | --- |
+| `USE_DOMAIN` | 是否让用户入口使用域名 |
+| `DOMAIN_ENABLED` | 是否启用域名模式 |
+| `USE_PUBLIC_IP` | 是否启用公网 IP 相关逻辑 |
+| `CLOUDFLARE_ENABLED` | 是否进入 Cloudflare 回源场景 |
+| `USE_CLOUDFLARE_DNS` | 是否使用 Cloudflare DNS 场景 |
 
-说明：
+### 5.2 HTTPS / TLS
 
-- 这些字段不是让前端使用的，而是给网关的 `media` 子系统生成推流地址使用。
-- 即使当前阶段暂时用不到，也建议保留，属于“环境模板字段”，不是无效字段。
+| 字段 | 作用 |
+| --- | --- |
+| `HTTPS_ENABLED` | 是否启用 HTTPS 模式 |
+| `TLS_PROVIDER` | 当前证书来源说明 |
+| `TLS_CERT_FILE` | 容器内证书路径 |
+| `TLS_KEY_FILE` | 容器内私钥路径 |
 
-### 3.5 国内环境构建字段
+### 5.3 Gateway Ports
 
-| 字段 | 作用 | 是否必须配置 | 说明 |
-| --- | --- | --- | --- |
-| `PYTHON_BASE_IMAGE` | Gateway 构建时使用的 Python 基础镜像 | 国内服务器建议配置 | 当前建议使用 `docker.m.daocloud.io/library/python:3.10-slim` |
-| `PIP_INDEX_URL` | `pip install` 使用的软件包源 | 国内服务器建议配置 | 当前建议使用清华源 `https://pypi.tuna.tsinghua.edu.cn/simple` |
-| `PIP_TRUSTED_HOST` | `pip install` 的可信主机 | 国内服务器建议配置 | 当前建议使用 `pypi.tuna.tsinghua.edu.cn` |
+| 字段 | 作用 |
+| --- | --- |
+| `GATEWAY_HOST` | 容器内监听地址 |
+| `GATEWAY_PORT` | 兼容字段，给旧逻辑保底 |
+| `GATEWAY_INTERNAL_PORT` | 容器内实际监听端口 |
+| `GATEWAY_BIND_PORT` | 宿主机对外暴露端口 |
+| `HTTP_PORT` | HTTP 标准端口说明 |
+| `HTTPS_PORT` | HTTPS 标准端口说明 |
 
-### 3.6 安全字段
+## 6. 如何理解 staging 的三步测试
 
-| 字段 | 作用 | 是否必须配置 | 说明 |
-| --- | --- | --- | --- |
-| `SRS_CALLBACK_TOKEN` | SRS 回调到 Gateway 时的校验令牌 | 当前建议保留 | 这是安全预留字段，未来接 SRS 回调时会真正用到 |
-| `MEDIA_ADMIN_TOKEN` | 媒体管理相关的额外安全令牌 | 当前建议保留 | 也是安全预留字段，当前版本可以先不启用复杂逻辑 |
+### 6.1 第一步：公网 IP + HTTP
 
-### 3.7 哪些字段当前属于“预留，不一定要改”
+推荐配置：
 
-下面这些字段当前建议保留在 `.env.*` 中，但在某些阶段可以先不改，或者先保留默认值：
+- `USE_DOMAIN=false`
+- `DOMAIN_ENABLED=false`
+- `HTTPS_ENABLED=false`
+- `CLOUDFLARE_ENABLED=false`
+- `GATEWAY_INTERNAL_PORT=8080`
+- `GATEWAY_BIND_PORT=8080`
 
-| 字段 | 当前是否可以暂时不改 | 原因 |
-| --- | --- | --- |
-| `PUBLIC_DOMAIN` | 可以 | 本地和联调阶段通常不用域名 |
-| `USE_CLOUDFLARE_DNS` | 可以 | 本地和联调阶段通常不启用 |
-| `STAGING_BASE_URL` | 本地阶段可以 | 但建议先保留，避免后期漏配 |
-| `PRODUCTION_PUSH_BASE` | 本地和联调阶段可以 | 正式上线前再确认即可 |
-| `SRS_CALLBACK_TOKEN` | 可以先保留默认值 | 当前代码已预留回调校验入口，但你还没正式接完整回调流 |
-| `MEDIA_ADMIN_TOKEN` | 可以先保留默认值 | 当前属于安全预留项 |
+访问入口：
 
-结论是：
+- `http://公网IP:8080/admin/`
+- `http://公网IP:8080/api/...`
+- `http://公网IP:8080/live/live/stream-001.m3u8`
 
-- “预留字段”不等于“无用字段”
-- 它们的意义是让三套环境模板结构保持一致，后续切换环境时不需要补字段
+### 6.2 第二步：域名 + HTTP
 
-## 4. 三套 `.env` 文件配置示例
+推荐配置：
 
-### 4.1 `.env.local` 配置示例
+- `USE_DOMAIN=true`
+- `DOMAIN_ENABLED=true`
+- `HTTPS_ENABLED=false`
+- `CLOUDFLARE_ENABLED=false`
+- `PUBLIC_DOMAIN=你的域名`
+- `PUBLIC_BASE_URL=http://你的域名`
+- `GATEWAY_INTERNAL_PORT=8080`
+- `GATEWAY_BIND_PORT=8080`
 
-适用于本地 Docker 调试。
+访问入口：
 
-当前项目中的实际内容是：
+- `http://你的域名/admin/`
+- `http://你的域名/api/...`
+- `http://你的域名/live/live/stream-001.m3u8`
 
-```env
-APP_ENV=local
-APP_RUNTIME_MODE=local
-PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
-PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
-SRS_IMAGE=docker.m.daocloud.io/ossrs/srs:5
-USE_DOMAIN=false
-USE_PUBLIC_IP=false
-LOCAL_BASE_URL=http://127.0.0.1:8080
-STAGING_BASE_URL=http://127.0.0.1:8080
-PUBLIC_BASE_URL=http://127.0.0.1:8080
-PUBLIC_DOMAIN=
-USE_CLOUDFLARE_DNS=false
-GATEWAY_PORT=8080
-SRS_HOST=srs
-SRS_RTMP_PORT=1935
-SRS_HTTP_PORT=8088
-SRS_APP=live
-SRS_PLAY_PATH_PREFIX=/live
-ALLOW_DIRECT_IP_PUSH=true
-LOCAL_PUSH_BASE=rtmp://127.0.0.1:1935/live
-STAGING_PUSH_BASE=rtmp://127.0.0.1:1935/live
-PRODUCTION_PUSH_BASE=rtmp://127.0.0.1:1935/live
-SRS_CALLBACK_TOKEN=replace-me
-MEDIA_ADMIN_TOKEN=replace-me
-```
+### 6.3 第三步：域名 + HTTPS
 
-说明：
+推荐配置：
 
-- 这里的 `SRS_HOST=srs` 是对的，因为 Gateway 在 Docker 网络里访问 SRS，用服务名访问。
-- 这里的 `127.0.0.1` 是“你在宿主机访问网关/推流时使用的地址”。
-- `STAGING_BASE_URL` 和 `PRODUCTION_PUSH_BASE` 虽然本地暂时用不到，但建议保留，属于模板统一字段。
+- `USE_DOMAIN=true`
+- `DOMAIN_ENABLED=true`
+- `HTTPS_ENABLED=true`
+- `CLOUDFLARE_ENABLED=true`
+- `USE_CLOUDFLARE_DNS=true`
+- `PUBLIC_DOMAIN=你的域名`
+- `PUBLIC_BASE_URL=https://你的域名`
+- `GATEWAY_INTERNAL_PORT=443`
+- `GATEWAY_BIND_PORT=443`
 
-### 4.2 `.env.staging` 配置示例
+同时需要：
 
-适用于服务器联调阶段。
+- 将 Cloudflare SSL/TLS 设为 `Full (strict)`
+- 将证书与私钥放入 `docker/certs/origin.crt` 和 `docker/certs/origin.key`
 
-当前项目中的实际内容是：
+访问入口：
 
-```env
-APP_ENV=staging
-APP_RUNTIME_MODE=staging
-PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
-PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
-SRS_IMAGE=docker.m.daocloud.io/ossrs/srs:5
-USE_DOMAIN=false
-USE_PUBLIC_IP=true
-LOCAL_BASE_URL=http://127.0.0.1:8080
-STAGING_BASE_URL=http://YOUR_PUBLIC_IP:8080
-PUBLIC_BASE_URL=http://YOUR_PUBLIC_IP:8080
-PUBLIC_DOMAIN=
-USE_CLOUDFLARE_DNS=false
-GATEWAY_PORT=8080
-SRS_HOST=srs
-SRS_RTMP_PORT=1935
-SRS_HTTP_PORT=8088
-SRS_APP=live
-SRS_PLAY_PATH_PREFIX=/live
-ALLOW_DIRECT_IP_PUSH=true
-LOCAL_PUSH_BASE=rtmp://127.0.0.1:1935/live
-STAGING_PUSH_BASE=rtmp://YOUR_PUBLIC_IP:1935/live
-PRODUCTION_PUSH_BASE=rtmp://YOUR_PUBLIC_IP:1935/live
-SRS_CALLBACK_TOKEN=replace-me
-MEDIA_ADMIN_TOKEN=replace-me
-```
+- `https://你的域名/admin/`
+- `https://你的域名/api/...`
+- `https://你的域名/live/live/stream-001.m3u8`
+- `wss://你的域名/ws`
 
-你真正需要改的字段主要是：
+## 7. Compose 启动命令
 
-- `STAGING_BASE_URL`
-- `PUBLIC_BASE_URL`
-- `STAGING_PUSH_BASE`
-- `PRODUCTION_PUSH_BASE`
-
-把其中的 `YOUR_PUBLIC_IP` 替换成你的公网 IP 即可。
-
-### 4.3 `.env.prod` 配置示例
-
-适用于正式上线阶段。
-
-当前项目中的实际内容是：
-
-```env
-APP_ENV=production
-APP_RUNTIME_MODE=production
-PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.10-slim
-PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
-SRS_IMAGE=docker.m.daocloud.io/ossrs/srs:5
-USE_DOMAIN=true
-USE_PUBLIC_IP=true
-LOCAL_BASE_URL=http://127.0.0.1:8080
-STAGING_BASE_URL=http://YOUR_PUBLIC_IP:8080
-PUBLIC_BASE_URL=http://test.com:8080
-PUBLIC_DOMAIN=test.com
-USE_CLOUDFLARE_DNS=true
-GATEWAY_PORT=8080
-SRS_HOST=srs
-SRS_RTMP_PORT=1935
-SRS_HTTP_PORT=8088
-SRS_APP=live
-SRS_PLAY_PATH_PREFIX=/live
-ALLOW_DIRECT_IP_PUSH=true
-LOCAL_PUSH_BASE=rtmp://127.0.0.1:1935/live
-STAGING_PUSH_BASE=rtmp://YOUR_PUBLIC_IP:1935/live
-PRODUCTION_PUSH_BASE=rtmp://YOUR_PUBLIC_IP:1935/live
-SRS_CALLBACK_TOKEN=replace-me
-MEDIA_ADMIN_TOKEN=replace-me
-```
-
-你真正需要改的字段主要是：
-
-- `STAGING_BASE_URL`
-- `PUBLIC_BASE_URL`
-- `PUBLIC_DOMAIN`
-- `STAGING_PUSH_BASE`
-- `PRODUCTION_PUSH_BASE`
-
-说明：
-
-- 当前方案下，正式上线时用户访问一般走域名。
-- 但 OBS 仍然可以继续通过公网 IP 推流，所以 `PRODUCTION_PUSH_BASE` 依然可以写公网 IP。
-
-## 5. 推荐的 Compose 启动方式
-
-### 5.1 本地开发启动
-
-```bash
-docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.local.yml up -d --build
-```
-
-### 5.2 服务器联调启动
-
-```bash
-docker compose --env-file .env.staging -f docker-compose.yml -f docker-compose.staging.yml up -d --build
-```
-
-### 5.3 正式上线启动
-
-```bash
-docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
-
-## 6. 本地开发阶段怎么做
-
-### 6.1 第一步：准备本地 Docker 环境
-
-确保本地已经安装：
-
-- Docker
-- Docker Compose
-- OBS
-
-### 6.2 第二步：启动本地服务
-
-运行：
+### 7.1 local
 
 ```bash
 cd docker
 docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
-### 6.3 第三步：检查服务状态
-
-要确认以下内容：
-
-- Gateway 是否启动成功
-- SRS 是否启动成功
-- 管理后台是否可访问
-- 媒体播放代理是否可访问
-
-建议检查：
-
-- `http://127.0.0.1:8080/health`
-- `http://127.0.0.1:8080/admin/`
-
-### 6.4 第四步：OBS 本地推流测试
-
-在 OBS 中配置推流地址：
-
-```text
-rtmp://127.0.0.1:1935/live
-```
-
-推流码可以先用简单流名，例如：
-
-```text
-stream-001
-```
-
-### 6.5 第五步：本地播放测试
-
-通过网关统一暴露的播放地址测试，例如：
-
-```text
-http://127.0.0.1:8080/live/stream-001.m3u8
-```
-
-### 6.6 本地阶段完成标准
-
-当以下条件全部满足时，可以认为本地调试完成：
-
-- OBS 能稳定推流到本地 SRS
-- Gateway 正常工作
-- 播放地址可访问
-- 管理端能看到对应直播状态
-- 容器重启后配置不需要改代码
-
-## 7. 服务器联调阶段怎么做
-
-### 7.1 第一步：准备服务器
-
-服务器需要完成：
-
-- 安装 Docker
-- 安装 Docker Compose
-- 确认服务器可以访问你配置的国内镜像源与清华 PyPI 源
-- 开放端口：
-  - `8080`
-  - `1935`
-  - 如有需要也开放 `8088`
-
-### 7.2 第二步：修改 `.env.staging`
-
-把这些字段替换成你的真实公网 IP：
-
-- `STAGING_BASE_URL`
-- `PUBLIC_BASE_URL`
-- `STAGING_PUSH_BASE`
-- `PRODUCTION_PUSH_BASE`
-
-如果服务器在国内网络环境下访问海外站点不稳定，建议同时确认这些字段保持为国内友好配置：
-
-- `PYTHON_BASE_IMAGE`
-- `PIP_INDEX_URL`
-- `PIP_TRUSTED_HOST`
-- `SRS_IMAGE`
-
-### 7.3 第三步：上传并部署
-
-推荐流程是：
-
-1. 本地构建并确认版本可用
-2. 上传项目代码到服务器，或者通过 git pull 获取
-3. 在服务器执行：
+### 7.2 staging
 
 ```bash
 cd docker
 docker compose --env-file .env.staging -f docker-compose.yml -f docker-compose.staging.yml up -d --build
 ```
 
-### 7.4 第四步：公网 IP 推流测试
-
-在 OBS 中配置：
-
-```text
-rtmp://公网IP:1935/live
-```
-
-流名仍然可以使用：
-
-```text
-stream-001
-```
-
-### 7.5 第五步：公网 IP 播放测试
-
-测试：
-
-```text
-http://公网IP:8080/live/stream-001.m3u8
-```
-
-### 7.6 第六步：检查联动能力
-
-你要重点检查：
-
-- 推流成功后，管理端是否能感知
-- 播放是否连续稳定
-- 网关是否能正确返回播放地址
-- 回调是否正常
-- Docker 重启后服务是否恢复
-
-### 7.7 服务器联调完成标准
-
-当以下条件满足时，可以进入正式上线：
-
-- 公网 IP 推流成功
-- 公网 IP 播放成功
-- 管理端联动正常
-- Docker 可重复部署
-- 环境切换不需要改代码
-
-## 8. 正式上线阶段怎么做
-
-### 8.1 第一步：配置域名
-
-在 Cloudflare 中配置：
-
-- 域名 A 记录指向公网 IP
-
-例如：
-
-- `test.com -> 公网IP`
-
-### 8.2 第二步：修改 `.env.prod`
-
-把这些字段替换成你的真实域名和公网 IP：
-
-- `STAGING_BASE_URL`
-- `PUBLIC_BASE_URL`
-- `PUBLIC_DOMAIN`
-- `STAGING_PUSH_BASE`
-- `PRODUCTION_PUSH_BASE`
-
-### 8.3 第三步：启动正式环境
-
-在服务器执行：
+### 7.3 prod
 
 ```bash
 cd docker
 docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
-### 8.4 第四步：验证域名访问
+## 8. 证书准备
 
-需要测试：
+当 `HTTPS_ENABLED=true` 时，Gateway 会直接以 HTTPS 模式启动。
 
-- `http://test.com:8080/health`
-- `http://test.com:8080/admin/`
-- `http://test.com:8080/live/stream-001.m3u8`
+因此必须保证容器内存在：
 
-### 8.5 第五步：保留最简单推流方式
+- `/app/certs/origin.crt`
+- `/app/certs/origin.key`
 
-为了减少风险，正式上线阶段 OBS 仍然可以继续使用：
+在当前 Docker 结构下，对应宿主机目录为：
 
-```text
-rtmp://公网IP:1935/live
-```
+- `docker/certs/origin.crt`
+- `docker/certs/origin.key`
 
-也就是说：
+如果缺少证书文件，Gateway 会直接启动失败。
 
-- 用户访问走域名
-- 主播推流先走公网 IP
+## 9. 每个阶段的完成标准
 
-这样更容易先把系统稳定下来。
+### 9.1 local 完成标准
 
-### 8.6 正式上线完成标准
-
-当以下条件满足时，可以认为系统已经“上线”：
-
-- 域名访问稳定
+- OBS 能推流到本地 SRS
 - Admin 正常
-- 播放正常
-- OBS 推流正常
-- 回调与状态同步正常
-- Docker 部署可重复执行
-- 换环境不需要改代码
+- API 正常
+- `/live/...` 正常
+- WebSocket 正常
 
-## 9. 你每个阶段到底在调试什么
+### 9.2 staging 完成标准
 
-### 9.1 本地开发阶段调试的是“功能闭环”
+- 公网 IP 能访问 Gateway
+- 域名解析正确
+- Cloudflare 配置正确
+- HTTPS / WSS 正常
+- `/live` 在公网环境下稳定可访问
 
-你在本地不是在调公网，而是在调：
+### 9.3 prod 完成标准
 
-- 代码逻辑是否成立
-- 推流到播放是否闭环
-- 媒体层和业务层是否打通
-
-### 9.2 服务器联调阶段调试的是“网络闭环”
-
-你在服务器阶段不是在做最终上线展示，而是在调：
-
-- 公网端口是否通
-- Docker 部署是否可靠
-- 公网推流和播放是否真实可用
-
-### 9.3 正式上线阶段调试的是“稳定运行能力”
-
-你在正式上线阶段要确认的是：
-
-- 域名是否可用
-- 服务是否稳定
-- 部署是否标准化
-- 是否可以不用改代码完成环境切换
-
-## 10. 最后给你的执行建议
-
-如果你想把复杂度控制在你目前可接受的范围内，我建议你严格按下面顺序推进：
-
-1. 先把本地 Docker 跑通
-2. 先确认 OBS -> SRS -> Gateway -> 播放地址 这个闭环成立
-3. 再把同一套 Docker 方案搬到公网服务器
-4. 先用公网 IP 联调
-5. 最后再切域名
-
-不要一开始就同时处理：
-
-- 域名
-- DNS
-- SRS
-- Gateway
-- 回调
-- 上线稳定性
-
-这样你会很容易把问题混在一起。
-
-最好的方式是：
-
-- 本地调功能
-- 服务器调网络
-- 上线调稳定性
-
-这三个阶段分开，你的推进会轻松很多。
+- `Admin / API / /live / WebSocket` 全部统一纳入 HTTPS / WSS
+- Cloudflare `Full (strict)` 回源正常
+- OBS 能稳定通过公网 IP 推流
+- Docker 可重复部署
+- 无需改代码即可切换环境

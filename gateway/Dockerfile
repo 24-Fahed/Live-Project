@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} --trusted-host ${PIP_TRUSTED_
 
 COPY . .
 
-EXPOSE 8080
+EXPOSE 8080 443
 
 RUN chmod +x /app/entrypoint.sh
 

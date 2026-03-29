@@ -24,12 +24,30 @@
         }
       },
       "mp-weixin-ip-release": {
-        "title": "微信小程序(IP上线)",
+        "title": "微信小程序(IP上线联调)",
         "env": {
           "UNI_PLATFORM": "mp-weixin"
         },
         "define": {
           "MP-WEIXIN-IP-RELEASE": true
+        }
+      },
+      "mp-weixin-domain-staging": {
+        "title": "微信小程序(域名HTTP联调)",
+        "env": {
+          "UNI_PLATFORM": "mp-weixin"
+        },
+        "define": {
+          "MP-WEIXIN-DOMAIN-STAGING": true
+        }
+      },
+      "mp-weixin-domain-prod": {
+        "title": "微信小程序(域名HTTPS上线)",
+        "env": {
+          "UNI_PLATFORM": "mp-weixin"
+        },
+        "define": {
+          "MP-WEIXIN-DOMAIN-PROD": true
         }
       }
     }
