@@ -22,7 +22,7 @@
 
 - 媒体服务使用 `SRS + RTMP 推流 + HLS 播放`
 - 播放入口统一由 Gateway 暴露为 `/live/...`
-- 当前 HLS 访问路径实际为：`/live/live/{stream_id}.m3u8`
+- 当前 HLS 访问路径实际为：`/live/{stream_id}.m3u8`
 - Admin 前端资源由 Gateway 托管
 - 微信小程序前端通过运行模式切换本地、IP、域名与 HTTPS 入口
 - OBS 继续通过公网 IP 的 `1935` 端口推流，不走 Cloudflare 代理
@@ -38,7 +38,7 @@ docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.loc
 
 - 健康检查：`http://127.0.0.1:8080/health`
 - Admin：`http://127.0.0.1:8080/admin/`
-- HLS 播放：`http://127.0.0.1:8080/live/live/stream-001.m3u8`
+- HLS 播放：`http://127.0.0.1:8080/live/stream-001.m3u8`
 - WebSocket：`ws://127.0.0.1:8080/ws`
 - OBS 推流：`rtmp://127.0.0.1:1935/live`
 - 推流码：`stream-001`

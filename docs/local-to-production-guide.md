@@ -179,7 +179,7 @@ docker/
 
 - `http://公网IP:8080/admin/`
 - `http://公网IP:8080/api/...`
-- `http://公网IP:8080/live/live/stream-001.m3u8`
+- `http://公网IP:8080/live/stream-001.m3u8`
 
 ### 6.2 第二步：域名 + HTTP
 
@@ -198,7 +198,7 @@ docker/
 
 - `http://你的域名/admin/`
 - `http://你的域名/api/...`
-- `http://你的域名/live/live/stream-001.m3u8`
+- `http://你的域名/live/stream-001.m3u8`
 
 ### 6.3 第三步：域名 + HTTPS
 
@@ -223,7 +223,7 @@ docker/
 
 - `https://你的域名/admin/`
 - `https://你的域名/api/...`
-- `https://你的域名/live/live/stream-001.m3u8`
+- `https://你的域名/live/stream-001.m3u8`
 - `wss://你的域名/ws`
 
 ## 7. Compose 启动命令
@@ -264,6 +264,268 @@ docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod
 - `docker/certs/origin.key`
 
 如果缺少证书文件，Gateway 会直接启动失败。
+
+## 8.1 精确测试方法
+
+这一节不是说明“应该测什么”，而是直接说明“如何操作”和“预期看到什么结果”。
+
+### 8.1.1 local 阶段测试
+
+#### 1. 检查容器是否启动成功
+
+操作：
+
+```bash
+cd docker
+docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.local.yml ps
+```
+
+预期结果：
+
+- 能看到 `live-gateway` 和 `live-srs`
+- 两个容器状态应为 `Up`
+- 不应持续出现 `Restarting`
+
+#### 2. 检查 Gateway 健康接口
+
+操作：
+
+在浏览器访问：
+
+```text
+http://127.0.0.1:8080/health
+```
+
+预期结果：
+
+- 页面能打开
+- 返回 `200` 类响应
+- 表示 Gateway 已经启动成功
+
+#### 3. 检查 Admin 页面
+
+操作：
+
+在浏览器访问：
+
+```text
+http://127.0.0.1:8080/admin/
+```
+
+预期结果：
+
+- 能打开后台页面
+- 页面静态资源可以正常加载
+- 页面不应出现明显的 404 或整页空白
+
+#### 4. 检查 API 是否可访问
+
+操作：
+
+在浏览器或接口工具访问：
+
+```text
+http://127.0.0.1:8080/api/v1/admin/streams
+```
+
+预期结果：
+
+- 接口能够返回响应
+- 即使返回空列表，也应当是“系统正常响应”，而不是连接失败
+
+#### 5. 使用 OBS 进行本地推流
+
+操作：
+
+在 OBS 中设置：
+
+- 服务器：`rtmp://127.0.0.1:1935/live`
+- 串流密钥：`stream-001`
+
+点击“开始推流”。
+
+预期结果：
+
+- OBS 不应立即报连接失败
+- `live-srs` 日志中应出现推流接入记录
+- 说明 SRS 已经接收到 RTMP 推流
+
+#### 6. 检查本地播放地址
+
+操作：
+
+在浏览器访问：
+
+```text
+http://127.0.0.1:8080/live/stream-001.m3u8
+```
+
+预期结果：
+
+- 地址可以正常打开，不应返回 404
+- 如果播放器或浏览器支持，能够继续请求分片或子清单
+- `live-gateway` 日志中应能看到 `/live/...` 请求
+
+#### 7. 检查 WebSocket
+
+操作：
+
+打开前端页面或管理端页面，让其触发 WebSocket 建连。
+
+预期结果：
+
+- `live-gateway` 中不应出现 WebSocket 路径 404
+- 前端页面不应出现持续的连接失败提示
+- 当前阶段对应的协议应为 `ws://`
+
+### 8.1.2 staging 阶段测试
+
+#### 1. 公网 IP + HTTP 测试
+
+操作：
+
+确保 `.env.staging` 中：
+
+- `DOMAIN_ENABLED=false`
+- `HTTPS_ENABLED=false`
+- `GATEWAY_BIND_PORT=8080`
+
+启动后，在浏览器访问：
+
+```text
+http://公网IP:8080/health
+http://公网IP:8080/admin/
+http://公网IP:8080/live/stream-001.m3u8
+```
+
+预期结果：
+
+- `/health` 可以打开
+- `/admin/` 可以打开
+- `/live/...` 不应返回 404
+- 说明公网 IP、端口暴露、Gateway 与 SRS 链路都已打通
+
+#### 2. 域名 + HTTP 测试
+
+操作：
+
+确保 `.env.staging` 中：
+
+- `DOMAIN_ENABLED=true`
+- `HTTPS_ENABLED=false`
+- `PUBLIC_BASE_URL=http://你的域名`
+
+并保证 DNS 已经正确指向服务器。然后访问：
+
+```text
+http://你的域名/health
+http://你的域名/admin/
+http://你的域名/live/stream-001.m3u8
+```
+
+预期结果：
+
+- 三个地址都能打开
+- 表示域名解析和 HTTP 回源都正常
+- 此时页面和播放链路仍应使用 HTTP / WS
+
+#### 3. 域名 + HTTPS 测试
+
+操作：
+
+确保 `.env.staging` 中：
+
+- `DOMAIN_ENABLED=true`
+- `HTTPS_ENABLED=true`
+- `PUBLIC_BASE_URL=https://你的域名`
+- `GATEWAY_INTERNAL_PORT=443`
+- `GATEWAY_BIND_PORT=443`
+
+并且 `docker/certs/` 中已经存在证书文件。然后访问：
+
+```text
+https://你的域名/health
+https://你的域名/admin/
+https://你的域名/live/stream-001.m3u8
+```
+
+预期结果：
+
+- 浏览器能建立 HTTPS 连接
+- `/health` 正常返回
+- `/admin/` 正常加载
+- `/live/...` 能访问，不应出现证书错误或 404
+- 如果页面使用 WebSocket，此时应切换为 `wss://`
+
+### 8.1.3 prod 阶段测试
+
+#### 1. 检查 HTTPS 正式入口
+
+操作：
+
+在浏览器访问：
+
+```text
+https://你的正式域名/health
+https://你的正式域名/admin/
+https://你的正式域名/live/stream-001.m3u8
+```
+
+预期结果：
+
+- 三个入口都应通过 HTTPS 访问
+- 不再依赖 `http://域名:8080`
+- 浏览器不应提示证书异常
+
+#### 2. 检查 Cloudflare 回源是否正常
+
+操作：
+
+访问正式域名，并查看页面与接口是否能稳定返回。
+
+预期结果：
+
+- 域名能正常打开
+- 不应出现持续性的 52x 回源错误
+- 说明 Cloudflare 到 Gateway 的 HTTPS 回源是正常的
+
+#### 3. 检查 OBS 推流是否仍然正常
+
+操作：
+
+在 OBS 中设置：
+
+- 服务器：`rtmp://公网IP:1935/live`
+- 串流密钥：`stream-001`
+
+点击“开始推流”，然后访问：
+
+```text
+https://你的正式域名/live/stream-001.m3u8
+```
+
+预期结果：
+
+- OBS 能正常连接并开始推流
+- 播放地址能够访问
+- 说明“OBS 走公网 IP，用户播放走 HTTPS 域名”这一正式链路已经成立
+
+#### 4. 检查重复部署能力
+
+操作：
+
+重新执行：
+
+```bash
+cd docker
+docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+预期结果：
+
+- 服务能再次被正常拉起
+- 不需要修改业务代码
+- 说明当前部署方式具备可重复上线能力
 
 ## 9. 每个阶段的完成标准
 

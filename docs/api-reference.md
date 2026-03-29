@@ -375,7 +375,7 @@
 
 - 方法：`GET`
 - 路径：`/live/{app}/{stream_id}.m3u8`
-- 示例：`/live/live/stream-001.m3u8`
+- 示例：`/live/stream-001.m3u8`
 - 说明：统一经由 gateway 对外暴露的 HLS 播放入口
 
 ### 10.2 HLS 分片地址

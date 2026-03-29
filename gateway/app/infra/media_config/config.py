@@ -24,7 +24,7 @@ class MediaSettings(BaseSettings):
     # 网关从 SRS 读取 HLS 文件时使用的 HTTP 端口。
     SRS_HTTP_PORT: int = 8088
 
-    # SRS 的应用名，因此当前播放地址会形如 /live/live/*.m3u8。
+    # SRS 的应用名，因此当前播放地址会形如 /live/*.m3u8。
     SRS_APP: str = "live"
 
     # 网关对外暴露的 HLS 播放前缀。

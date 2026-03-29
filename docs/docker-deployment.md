@@ -65,11 +65,10 @@ RTMP ingest + HLS output]
 
 ```mermaid
 flowchart TB
-    Entry[entrypoint.sh]
-    Uvicorn[uvicorn app.main:app]
-    FastAPI[FastAPI app
-/api /admin /live /ws]
-    Certs[/app/certs]
+    Entry["entrypoint.sh"]
+    Uvicorn["uvicorn app.main:app"]
+    FastAPI["FastAPI app<br/>/api /admin /live /ws"]
+    Certs["/app/certs"]
 
     Entry --> Uvicorn
     Uvicorn --> FastAPI
@@ -173,7 +172,7 @@ flowchart LR
     SRS[SRS HTTP 8088]
     Files[HLS Files]
 
-    Player -->|GET /live/live/stream-001.m3u8| Gateway
+    Player -->|GET /live/stream-001.m3u8| Gateway
     Gateway -->|proxy upstream| SRS
     SRS --> Files
 ```

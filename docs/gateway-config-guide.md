@@ -207,6 +207,79 @@ HTTPS 不属于任何一个业务子系统。
 
 这样不会一上来就被所有配置同时绕晕。
 
+## 7.1 当前版本需要特别说明的配置兼容性事实
+
+为了避免后续读配置时产生误解，当前版本有几项需要明确说明的事实：
+
+### 7.1.1 `jwt_settings` 是当前真实生效的公开认证配置名
+
+虽然认证配置类名是 `AuthSettings`，但当前代码中真正被调用方使用的公开实例名仍然是 `jwt_settings`。这是一项有意保留的向后兼容策略。
+
+因此在当前版本里：
+
+- 配置定义层使用 `AuthSettings` 类
+- 调用层继续使用 `jwt_settings`
+- 不应在未讨论的情况下直接切换成新的公开实例名
+
+### 7.1.2 `_MOUNTS` 是当前真实生效的静态挂载常量名
+
+`static` 基础设施层当前对外仍使用 `_MOUNTS` 作为静态挂载注册表常量名。这个名字虽然不一定是长期最理想的命名，但它已经被初始化代码真实使用，因此当前版本保持不变。
+
+### 7.1.3 `TLS_PROVIDER` 当前属于说明性字段
+
+三套 `.env` 文件中都保留了 `TLS_PROVIDER`，用于说明当前证书来源，例如 `cloudflare-origin-ca`。但在当前版本中，这个字段还没有直接参与 `gateway` 的启动逻辑。
+
+当前真正决定 HTTPS 启动的是：
+
+- `HTTPS_ENABLED`
+- `TLS_CERT_FILE`
+- `TLS_KEY_FILE`
+- `GATEWAY_INTERNAL_PORT` / `GATEWAY_PORT`
+
+因此可以把 `TLS_PROVIDER` 理解为：
+
+- 当前阶段的说明性字段
+- 面向文档与部署认知的字段
+- 后续可以再扩展为真正参与策略分支的字段
+
+### 7.1.4 `HTTP_PORT` 当前不是网关启动的直接控制字段
+
+当前 `gateway` 真正启动时读取的是：
+
+- `GATEWAY_HOST`
+- `GATEWAY_INTERNAL_PORT`
+- `GATEWAY_PORT`
+- `HTTPS_ENABLED`
+
+而 Docker 对外端口映射使用的是：
+
+- `GATEWAY_BIND_PORT:GATEWAY_INTERNAL_PORT`
+
+因此 `HTTP_PORT` 在当前版本中更偏向：
+
+- 文档层和接入层说明字段
+- 对标准 HTTP 端口语义的表达字段
+
+而不是当前容器启动链路里的唯一控制开关。
+
+## 7.2 当前 docker 到 gateway 的配置兼容性结论
+
+经过本轮核对，当前 Docker 环境文件到 Gateway 配置层的结论如下：
+
+- `APP_ENV`、`APP_RUNTIME_MODE`、`LOCAL_BASE_URL`、`STAGING_BASE_URL`、`PUBLIC_BASE_URL` 与 `runtime/config.py` 对齐
+- `DOMAIN_ENABLED`、`HTTPS_ENABLED`、`CLOUDFLARE_ENABLED`、`TLS_CERT_FILE`、`TLS_KEY_FILE` 与 `edge/config.py`、`entrypoint.sh` 对齐
+- `GATEWAY_HOST`、`GATEWAY_INTERNAL_PORT`、`GATEWAY_PORT`、`GATEWAY_BIND_PORT` 与 `entrypoint.sh`、`docker-compose.yml` 对齐
+- `SRS_HOST`、`SRS_RTMP_PORT`、`SRS_HTTP_PORT`、`SRS_APP`、`SRS_PLAY_PATH_PREFIX`、推流地址字段与 `media_config/config.py` 对齐
+- `WECHAT_APPID`、`WECHAT_SECRET` 与 `auth/config.py` 中的微信配置对齐
+- `SRS_CALLBACK_TOKEN`、`MEDIA_ADMIN_TOKEN` 与媒体基础设施配置对齐
+
+当前未发现新的“字段名不一致导致运行失败”的 docker -> gateway 配置兼容问题。
+
+需要注意的只有两点：
+
+- `TLS_PROVIDER` 当前仍是说明性字段，不是运行时控制字段
+- `HTTP_PORT` 当前仍是说明性/语义性字段，不是启动链路主控字段
+
 ## 8. 一句话总结
 
 当前网关配置的核心思路是：

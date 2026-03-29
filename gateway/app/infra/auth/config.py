@@ -50,5 +50,5 @@ class WechatSettings(BaseSettings):
         extra = "ignore"
 
 
-auth_settings = AuthSettings()
+jwt_settings = AuthSettings()
 wechat_settings = WechatSettings()

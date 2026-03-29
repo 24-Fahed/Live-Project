@@ -49,7 +49,7 @@ stream-001
 ### 3.3 对应播放地址
 
 ```text
-http://127.0.0.1:8080/live/live/stream-001.m3u8
+http://127.0.0.1:8080/live/stream-001.m3u8
 ```
 
 ## 4. staging 阶段如何填写
@@ -71,7 +71,7 @@ stream-001
 播放地址：
 
 ```text
-http://公网IP:8080/live/live/stream-001.m3u8
+http://公网IP:8080/live/stream-001.m3u8
 ```
 
 ### 4.2 域名 + HTTP
@@ -85,7 +85,7 @@ rtmp://公网IP:1935/live
 播放地址则切换为：
 
 ```text
-http://你的域名/live/live/stream-001.m3u8
+http://你的域名/live/stream-001.m3u8
 ```
 
 ## 5. prod 阶段如何填写
@@ -117,7 +117,7 @@ stream-001
 播放地址切换为：
 
 ```text
-https://你的域名/live/live/stream-001.m3u8
+https://你的域名/live/stream-001.m3u8
 ```
 
 ## 6. 管理端的流配置接口
@@ -157,7 +157,7 @@ GET /api/v1/admin/media/streams/stream-001
 - 播放走域名 HTTPS
 - 推流走公网 IP 的 RTMP 端口
 
-### 7.2 为什么播放地址里是 `/live/live/stream-001.m3u8`？
+### 7.2 为什么播放地址里是 `/live/stream-001.m3u8`？
 
 因为当前播放路径由两部分组成：
 
@@ -167,7 +167,7 @@ GET /api/v1/admin/media/streams/stream-001
 拼起来之后就是：
 
 ```text
-/live/live/stream-001.m3u8
+/live/stream-001.m3u8
 ```
 
 这是当前版本的统一设计，不建议在页面里手动拼接其它形式。
