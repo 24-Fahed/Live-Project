@@ -79,6 +79,12 @@ docker compose --env-file .env.local -f docker-compose.yml -f docker-compose.loc
 
 ## 已知说明
 
+- 微信小程序模拟器中的播放器不稳定，涉及播放问题时优先以真机测试结果为准
+- 微信开发者工具问题较多，出现异常时先刷新、重启，并确认微信账号已登录
+- 当前版本的媒体层已经从演示型 HLS 方案转向 `SRS`，但仍然是课程项目范围内的简化实现
+- 微信小程序前端AI内容显示不正常
+- 管理页面部分符号缺失显示为方框加叉号
+- 小程序前端投票逻辑存在问题，票数可正常上传累计但显示在对抗条错误
 - `prod` 目标是统一收口到 `HTTPS + WSS`
 - `staging` 阶段允许按能力增量测试 HTTP / 域名 / HTTPS，不等同于正式上线入口
 - Windows 下编辑 `.sh`、`.conf`、`.yml`、`.env` 文件时，仍需保持 `UTF-8 without BOM + LF`

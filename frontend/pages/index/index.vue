@@ -354,7 +354,7 @@
 				console.log('UserInfo:', loginData.userInfo?.nickName)
 				
 			// 使用配置的API地址（强制使用本地服务器）
-			const apiBaseURL = API_BASE_URL || 'http://192.168.31.249:8081';
+			const apiBaseURL = API_BASE_URL;
 			
 			// 调试日志：显示使用的服务器地址
 			console.log('📡 API_BASE_URL 值:', API_BASE_URL);
